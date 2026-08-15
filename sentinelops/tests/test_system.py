@@ -1,7 +1,13 @@
+from fastapi.testclient import TestClient
+
+import sentinelops.api as api_module
 from sentinelops.core import ActionProposal, AutonomyMode, EventStore, IncidentStatus, PolicyEngine, RiskLevel, RunbookRetriever, Settings
 from sentinelops.diagnostics import run_diagnostics
 from sentinelops.evals import run_evals
 from sentinelops.orchestrator import SentinelOrchestrator, create_demo_incident
+
+
+client = TestClient(api_module.app)
 
 
 def proposal(**overrides):
@@ -51,6 +57,49 @@ def test_diagnostics_are_ready():
     assert report["ok"]
     assert all(check["ok"] for check in report["checks"].values())
     assert "rollback_deployment" in report["checks"]["tool_registry"]["detail"]
+
+
+def test_api_assisted_incident_flow(monkeypatch):
+    control_plane = SentinelOrchestrator(Settings(AutonomyMode.ASSISTED))
+    monkeypatch.setattr(api_module, "control_plane", control_plane)
+
+    assert client.get("/health").status_code == 200
+    ready = client.get("/ready")
+    assert ready.status_code == 200 and ready.json()["ok"]
+
+    fault = client.post("/api/simulator/faults", json={"service": "checkout", "fault": "bad_deployment"})
+    assert fault.status_code == 200
+
+    created = client.post(
+        "/api/incidents",
+        json={
+            "title": "checkout production SLO violation",
+            "service": "checkout",
+            "metric": "error_rate",
+            "value": 0.34,
+            "threshold": 0.05,
+            "description": "error spike started immediately after the latest deployment",
+        },
+    )
+    assert created.status_code == 200
+    incident_id = created.json()["id"]
+
+    response = client.post(f"/api/incidents/{incident_id}/respond")
+    assert response.status_code == 200
+    assert response.json()["status"] == "awaiting_approval"
+    assert response.json()["pending_actions"][0]["tool"] == "rollback_deployment"
+
+    approved = client.post(f"/api/incidents/{incident_id}/approve")
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "resolved"
+
+    trace = client.get(f"/api/incidents/{incident_id}/trace")
+    assert trace.status_code == 200 and trace.json()["verified"]
+
+    metrics = client.get("/api/metrics")
+    assert metrics.status_code == 200
+    assert metrics.json()["incidents_total"] == 1
+    assert metrics.json()["trace_integrity_rate"] == 1.0
 
 
 def test_eval_gate():
