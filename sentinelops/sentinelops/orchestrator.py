@@ -4,8 +4,9 @@ from threading import RLock
 from typing import Any
 
 from .agents import AgentContext, InvestigatorAgent, PlannerAgent, RemediatorAgent, ReviewerAgent, VerifierAgent
+from .config import settings_from_env
 from .core import ActionProposal, CloudSimulator, EventStore, Incident, IncidentStatus, PolicyEngine, RunbookRetriever, Settings, Signal, ToolRegistry
-from .llm import OpenAIReasoner
+from .llm import LLMError, OpenAIReasoner
 
 
 class SentinelOrchestrator:
@@ -15,13 +16,15 @@ class SentinelOrchestrator:
         simulator: CloudSimulator | None = None,
         reasoner: OpenAIReasoner | None = None,
     ) -> None:
-        self.settings = settings or Settings()
+        self.settings = settings or settings_from_env()
         self.simulator = simulator or CloudSimulator()
         self.events = EventStore()
         self.tools = ToolRegistry(self.simulator)
         self.policy = PolicyEngine(self.settings)
         self.runbooks = RunbookRetriever()
         self.reasoner = reasoner or OpenAIReasoner()
+        if self.reasoner.config.backend == "openai" and not self.reasoner.enabled:
+            raise LLMError(self.reasoner.configuration_error or "OpenAI backend was requested but is not available")
         context = AgentContext(self.tools, self.events, self.reasoner)
         self.investigator = InvestigatorAgent(context)
         self.planner = PlannerAgent(context)
