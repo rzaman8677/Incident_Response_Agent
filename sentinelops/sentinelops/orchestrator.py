@@ -5,17 +5,24 @@ from typing import Any
 
 from .agents import AgentContext, InvestigatorAgent, PlannerAgent, RemediatorAgent, ReviewerAgent, VerifierAgent
 from .core import ActionProposal, CloudSimulator, EventStore, Incident, IncidentStatus, PolicyEngine, RunbookRetriever, Settings, Signal, ToolRegistry
+from .llm import OpenAIReasoner
 
 
 class SentinelOrchestrator:
-    def __init__(self, settings: Settings | None = None, simulator: CloudSimulator | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        simulator: CloudSimulator | None = None,
+        reasoner: OpenAIReasoner | None = None,
+    ) -> None:
         self.settings = settings or Settings()
         self.simulator = simulator or CloudSimulator()
         self.events = EventStore()
         self.tools = ToolRegistry(self.simulator)
         self.policy = PolicyEngine(self.settings)
         self.runbooks = RunbookRetriever()
-        context = AgentContext(self.tools, self.events)
+        self.reasoner = reasoner or OpenAIReasoner()
+        context = AgentContext(self.tools, self.events, self.reasoner)
         self.investigator = InvestigatorAgent(context)
         self.planner = PlannerAgent(context)
         self.reviewer = ReviewerAgent(context)
@@ -29,7 +36,11 @@ class SentinelOrchestrator:
         incident = Incident(title=title, service=service, severity=severity, signals=signals or [])
         with self._lock:
             self.incidents[incident.id] = incident
-        self.events.append(incident.id, "incident.created", incident.to_dict())
+        self.events.append(
+            incident.id,
+            "incident.created",
+            {**incident.to_dict(), "reasoning_backend": self.reasoner.status()},
+        )
         return incident
 
     def respond(self, incident_id: str, approved: bool = False) -> Incident:
