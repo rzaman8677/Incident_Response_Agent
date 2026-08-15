@@ -1,4 +1,5 @@
 from sentinelops.core import ActionProposal, AutonomyMode, EventStore, IncidentStatus, PolicyEngine, RiskLevel, RunbookRetriever, Settings
+from sentinelops.diagnostics import run_diagnostics
 from sentinelops.evals import run_evals
 from sentinelops.orchestrator import SentinelOrchestrator, create_demo_incident
 
@@ -43,6 +44,13 @@ def test_hash_chain_and_runbook_retrieval():
     second = store.append("i-1", "investigated", {"x": 2})
     assert second.previous_hash == first.hash and store.verify("i-1")
     assert RunbookRetriever().search("errors after deployment rollback", "checkout")[0].id == "RB-DEPLOY-001"
+
+
+def test_diagnostics_are_ready():
+    report = run_diagnostics()
+    assert report["ok"]
+    assert all(check["ok"] for check in report["checks"].values())
+    assert "rollback_deployment" in report["checks"]["tool_registry"]["detail"]
 
 
 def test_eval_gate():
