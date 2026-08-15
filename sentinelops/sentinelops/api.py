@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from .diagnostics import run_diagnostics
 from .evals import run_evals
 from .orchestrator import SentinelOrchestrator, build_signal
 
@@ -37,6 +39,29 @@ def dashboard():
 @app.get("/health")
 def health():
     return {"ok": True, "service": "sentinelops", "tools": control_plane.tools.names()}
+
+
+@app.get("/ready")
+def ready(response: Response):
+    report = run_diagnostics()
+    if not report["ok"]:
+        response.status_code = 503
+    return report
+
+
+@app.get("/api/metrics")
+def operational_metrics():
+    incidents = control_plane.list()
+    statuses = Counter(incident.status.value for incident in incidents)
+    verified = sum(1 for incident in incidents if control_plane.events.verify(incident.id))
+    return {
+        "incidents_total": len(incidents),
+        "incidents_by_status": dict(sorted(statuses.items())),
+        "verified_traces": verified,
+        "trace_integrity_rate": verified / len(incidents) if incidents else 1.0,
+        "registered_tools": len(control_plane.tools.names()),
+        "simulated_services": len(control_plane.simulator.services),
+    }
 
 
 @app.get("/api/incidents")
