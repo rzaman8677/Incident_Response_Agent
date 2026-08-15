@@ -1,7 +1,10 @@
-.PHONY: install test eval demo serve
+.PHONY: install doctor test eval demo serve
 
 install:
 	python -m pip install -e '.[all]'
+
+doctor:
+	sentinelops doctor
 
 test:
 	python -m pytest
