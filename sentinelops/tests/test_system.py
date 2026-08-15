@@ -1,12 +1,14 @@
 import json
 
 from fastapi.testclient import TestClient
+import pytest
 
 import sentinelops.api as api_module
+from sentinelops.config import settings_from_env
 from sentinelops.core import ActionProposal, AutonomyMode, EventStore, IncidentStatus, PolicyEngine, RiskLevel, RunbookRetriever, Settings
 from sentinelops.diagnostics import run_diagnostics
 from sentinelops.evals import run_evals
-from sentinelops.llm import LLMConfig, LLMResult, OpenAIReasoner
+from sentinelops.llm import LLMConfig, LLMError, LLMResult, OpenAIReasoner
 from sentinelops.orchestrator import SentinelOrchestrator, create_demo_incident
 
 
@@ -30,6 +32,26 @@ def test_policy_modes_and_hard_high_risk_gate():
     assert autonomous.allowed and not autonomous.requires_approval
     high = PolicyEngine(Settings(AutonomyMode.AUTONOMOUS)).evaluate(proposal(risk=RiskLevel.HIGH))
     assert high.requires_approval and not high.allowed
+
+
+def test_runtime_policy_settings_load_from_env(monkeypatch):
+    monkeypatch.setenv("SENTINELOPS_AUTONOMY", "autonomous")
+    monkeypatch.setenv("SENTINELOPS_CONFIDENCE_THRESHOLD", "0.91")
+    monkeypatch.setenv("SENTINELOPS_MAX_BLAST_RADIUS", "3")
+    monkeypatch.setenv("SENTINELOPS_ACTION_BUDGET", "2")
+    settings = settings_from_env()
+    assert settings.autonomy_mode is AutonomyMode.AUTONOMOUS
+    assert settings.autonomous_confidence_threshold == 0.91
+    assert settings.max_blast_radius == 3
+    assert settings.action_budget == 2
+
+
+def test_forced_openai_mode_requires_local_configuration(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    reasoner = OpenAIReasoner(LLMConfig(backend="openai"))
+    assert not reasoner.enabled
+    with pytest.raises(LLMError):
+        SentinelOrchestrator(reasoner=reasoner)
 
 
 def test_assisted_flow_pauses_then_resolves():
