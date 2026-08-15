@@ -11,7 +11,7 @@ from .diagnostics import run_diagnostics
 from .evals import run_evals
 from .orchestrator import SentinelOrchestrator, build_signal
 
-app = FastAPI(title="SentinelOps", version="0.1.0", description="Policy-gated multi-agent incident response control plane")
+app = FastAPI(title="SentinelOps", version="0.2.0", description="Policy-gated multi-agent incident response control plane with OpenAI reasoning")
 control_plane = SentinelOrchestrator()
 WEB_ROOT = Path(__file__).resolve().parents[1] / "web"
 
@@ -38,7 +38,7 @@ def dashboard():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "sentinelops", "tools": control_plane.tools.names()}
+    return {"ok": True, "service": "sentinelops", "tools": control_plane.tools.names(), "llm": control_plane.reasoner.status()}
 
 
 @app.get("/ready")
@@ -61,6 +61,7 @@ def operational_metrics():
         "trace_integrity_rate": verified / len(incidents) if incidents else 1.0,
         "registered_tools": len(control_plane.tools.names()),
         "simulated_services": len(control_plane.simulator.services),
+        "llm": control_plane.reasoner.status(),
     }
 
 
