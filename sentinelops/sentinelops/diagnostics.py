@@ -6,6 +6,7 @@ from typing import Any
 
 from . import __version__
 from .core import CloudSimulator, EventStore, RunbookRetriever, ToolRegistry
+from .llm import OpenAIReasoner
 
 
 EXPECTED_TOOLS = {
@@ -19,7 +20,7 @@ EXPECTED_TOOLS = {
 
 
 def run_diagnostics() -> dict[str, Any]:
-    """Run dependency-free readiness checks for local demos and deployments."""
+    """Run readiness checks without making a billable model request."""
     checks: dict[str, dict[str, Any]] = {}
 
     python_ok = sys.version_info >= (3, 11)
@@ -57,6 +58,14 @@ def run_diagnostics() -> dict[str, Any]:
     checks["event_chain"] = {
         "ok": store.verify("doctor"),
         "detail": "SHA-256 chain verified",
+    }
+
+    reasoner = OpenAIReasoner()
+    llm_status = reasoner.status()
+    llm_expected = reasoner.config.backend == "openai" or bool(reasoner.api_key)
+    checks["llm"] = {
+        "ok": reasoner.enabled if llm_expected else True,
+        "detail": llm_status,
     }
 
     return {
