@@ -5,7 +5,7 @@ from typing import Any
 
 from .agents import AgentContext, InvestigatorAgent, PlannerAgent, RemediatorAgent, ReviewerAgent, VerifierAgent
 from .config import settings_from_env
-from .core import ActionProposal, CloudSimulator, EventStore, Incident, IncidentStatus, PolicyEngine, RunbookRetriever, Settings, Signal, ToolRegistry
+from .core import ActionProposal, CloudSimulator, EventStore, Incident, IncidentStatus, PolicyEngine, RiskLevel, RunbookRetriever, Settings, Signal, ToolRegistry
 from .llm import LLMError, OpenAIReasoner
 
 
@@ -75,6 +75,15 @@ class SentinelOrchestrator:
         executable: list[ActionProposal] = []
         gated: list[ActionProposal] = []
         for action in actions[: self.settings.action_budget]:
+            # The model may describe risk/confidence, but it cannot weaken the
+            # deterministic safety floor. All current write tools affect one
+            # service and are at least medium risk; confidence cannot exceed
+            # the grounded incident evidence confidence.
+            if action.risk is RiskLevel.LOW:
+                action.risk = RiskLevel.MEDIUM
+            action.blast_radius = max(1, action.blast_radius)
+            action.confidence = min(action.confidence, incident.confidence)
+
             decision = self.policy.evaluate(action)
             self.events.append(incident.id, "policy.decision", {"action": action.to_dict(), "allowed": decision.allowed, "requires_approval": decision.requires_approval, "reason": decision.reason})
             if decision.allowed:
