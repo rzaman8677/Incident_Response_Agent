@@ -3,6 +3,7 @@ from __future__ import annotations
 from statistics import mean
 
 from .core import AutonomyMode, IncidentStatus, Settings
+from .llm import LLMConfig, OpenAIReasoner
 from .orchestrator import SentinelOrchestrator, create_demo_incident
 
 
@@ -13,10 +14,18 @@ CASES = [
 ]
 
 
+def deterministic_reasoner() -> OpenAIReasoner:
+    return OpenAIReasoner(LLMConfig(backend="deterministic"))
+
+
 def run_evals() -> dict:
+    """Offline regression benchmark. It intentionally never calls a hosted model."""
     results = []
     for name, service, fault, expected_tool in CASES:
-        app = SentinelOrchestrator(Settings(AutonomyMode.AUTONOMOUS, 0.80))
+        app = SentinelOrchestrator(
+            Settings(AutonomyMode.AUTONOMOUS, 0.80),
+            reasoner=deterministic_reasoner(),
+        )
         incident = create_demo_incident(app, fault, service)
         app.respond(incident.id)
         tools = [entry["action"]["tool"] for entry in incident.executed_actions]
@@ -29,6 +38,7 @@ def run_evals() -> dict:
             "actions": tools,
         })
     return {
+        "backend": "deterministic",
         "cases": results,
         "resolution_rate": mean(1.0 if r["resolved"] else 0.0 for r in results),
         "tool_selection_accuracy": mean(1.0 if r["expected_tool_used"] else 0.0 for r in results),
