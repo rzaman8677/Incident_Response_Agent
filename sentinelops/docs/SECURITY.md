@@ -1,6 +1,14 @@
 # SentinelOps Safety Model
 
-SentinelOps treats agent output as untrusted until it passes deterministic checks.
+SentinelOps treats all model output as **untrusted proposals** until it passes deterministic checks. The OpenAI model participates in diagnosis and planning; it never owns authorization or direct infrastructure credentials.
+
+## LLM trust boundary
+
+The LLM-backed Investigator receives read-only incident context: alert signals, current simulator telemetry, logs, service health, and retrieved runbooks. Structured output constrains the finding schema, and model findings are grounded against observed deterministic telemetry signatures before they can drive remediation.
+
+The LLM-backed Planner receives the grounded findings plus a small allowlist of supported write tools. It can propose only `rollback_deployment`, `scale_service`, or `restart_service`. A deterministic Reviewer rejects wrong-service, duplicate, out-of-range, or root-cause-inconsistent proposals before policy evaluation.
+
+The model is never given an API that directly executes these tools.
 
 ## Autonomy modes
 
@@ -19,6 +27,21 @@ Even in autonomous mode:
 - confidence must meet the autonomous threshold.
 - a per-incident action budget prevents unbounded remediation loops.
 - reviewer validation prevents cross-service mutations and invalid scale values.
+- root-cause/action consistency is checked independently of the LLM.
+
+## LLM failure behavior
+
+`SENTINELOPS_LLM_FALLBACK=true` permits deterministic investigation/planning when a configured model call fails. The policy engine itself never falls back to model judgment. `SENTINELOPS_AGENT_BACKEND=openai` requires a working local OpenAI configuration at startup; `auto` permits an offline deterministic runtime when no API key is configured.
+
+The deterministic CI/eval path never makes hosted model calls, which prevents tests from requiring secrets, spending API credits, or becoming nondeterministic.
+
+## Credential handling
+
+- `OPENAI_API_KEY` belongs only in a local `.env`, shell environment, secret manager, or deployment secret.
+- `.env` is ignored by Git.
+- `.dockerignore` excludes `.env` and `.env.*` from the Docker build context while allowing `.env.example`.
+- Docker runtime credentials should be passed with `--env-file .env` or an orchestrator secret, never baked into the image.
+- API keys are never written into incident events or traces.
 
 ## Idempotency
 
@@ -26,7 +49,7 @@ Every remediation proposal has an idempotency key. The remediator records the fi
 
 ## Auditability
 
-Incident events are SHA-256 hash chained. The verifier can recompute the chain to detect mutation of prior trace entries.
+Incident events are SHA-256 hash chained. LLM-stage events record non-secret metadata such as model name, response ID, latency, accepted proposal, and backend. The verifier can recompute the chain to detect mutation of prior trace entries.
 
 ## Closed-loop recovery
 
@@ -34,4 +57,4 @@ The system never equates a successful tool response with incident resolution. A 
 
 ## Production hardening before real infrastructure
 
-Add workload identity and least-privilege IAM, signed/RBAC approval identity, durable event and idempotency storage, tool argument schemas, rate limits/circuit breakers, network egress controls, prompt-injection defenses for external logs/runbooks, secret-manager integration, and security review for each state-changing adapter.
+Before connecting the project to real cloud control planes, add workload identity and least-privilege IAM, signed/RBAC approval identity, durable event and idempotency storage, per-tool schemas, rate limits/circuit breakers, network egress controls, prompt-injection defenses for untrusted logs/runbooks, secret-manager integration, model-call budgets, prompt/version provenance, and security review for each state-changing adapter.
