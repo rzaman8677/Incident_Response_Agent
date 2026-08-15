@@ -13,9 +13,9 @@ dependencies = ["python-dotenv>=1.0,<2"]
 
 [project.optional-dependencies]
 api = ["fastapi>=0.116,<1", "uvicorn[standard]>=0.35,<1"]
-llm = ["openai>=1.100,<2"]
+llm = ["openai>=2.45,<3"]
 dev = ["fastapi>=0.116,<1", "httpx>=0.28,<1", "pytest>=8.3,<10"]
-all = ["fastapi>=0.116,<1", "httpx>=0.28,<1", "uvicorn[standard]>=0.35,<1", "pytest>=8.3,<10", "openai>=1.100,<2"]
+all = ["fastapi>=0.116,<1", "httpx>=0.28,<1", "uvicorn[standard]>=0.35,<1", "pytest>=8.3,<10", "openai>=2.45,<3"]
 
 [project.scripts]
 sentinelops = "sentinelops.cli:main"
