@@ -13,8 +13,8 @@ dependencies = []
 
 [project.optional-dependencies]
 api = ["fastapi>=0.116,<1", "uvicorn[standard]>=0.35,<1"]
-dev = ["pytest>=8.3,<10"]
-all = ["fastapi>=0.116,<1", "uvicorn[standard]>=0.35,<1", "pytest>=8.3,<10"]
+dev = ["fastapi>=0.116,<1", "httpx>=0.28,<1", "pytest>=8.3,<10"]
+all = ["fastapi>=0.116,<1", "httpx>=0.28,<1", "uvicorn[standard]>=0.35,<1", "pytest>=8.3,<10"]
 
 [project.scripts]
 sentinelops = "sentinelops.cli:main"
