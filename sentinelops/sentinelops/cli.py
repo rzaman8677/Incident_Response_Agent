@@ -4,7 +4,8 @@ import argparse
 import json
 import os
 
-from .core import AutonomyMode, Settings
+from .config import settings_from_env
+from .core import AutonomyMode
 from .diagnostics import run_diagnostics
 from .evals import run_evals
 from .llm import LLMConfig, LLMError, OpenAIReasoner
@@ -23,6 +24,13 @@ def _apply_llm_flags(args: argparse.Namespace) -> None:
         os.environ["SENTINELOPS_AGENT_BACKEND"] = backend
     if model:
         os.environ["SENTINELOPS_MODEL"] = model
+
+
+def _forced_openai_preflight() -> tuple[bool, dict]:
+    reasoner = OpenAIReasoner(LLMConfig.from_env())
+    if reasoner.config.backend == "openai" and not reasoner.enabled:
+        return False, reasoner.status()
+    return True, reasoner.status()
 
 
 def main() -> int:
@@ -82,18 +90,27 @@ def main() -> int:
         return 0
 
     _apply_llm_flags(args)
+    ready, llm_status = _forced_openai_preflight()
+    if not ready:
+        print(json.dumps({"ok": False, "error": "OpenAI backend was requested but is not configured", "llm": llm_status}, indent=2))
+        return 1
 
     if args.command == "serve":
         import uvicorn
         uvicorn.run("sentinelops.api:app", host=args.host, port=args.port)
         return 0
 
-    app = SentinelOrchestrator(Settings(AutonomyMode(args.mode), 0.80))
-    incident = create_demo_incident(app, args.fault, args.service)
-    app.respond(incident.id)
-    if incident.pending_actions and args.approve:
-        app.approve(incident.id)
-    print(json.dumps({"llm": app.reasoner.status(), "incident": incident.to_dict(), "trace": app.trace(incident.id)}, indent=2))
+    try:
+        app = SentinelOrchestrator(settings_from_env(autonomy_mode=AutonomyMode(args.mode)))
+        incident = create_demo_incident(app, args.fault, args.service)
+        app.respond(incident.id)
+        if incident.pending_actions and args.approve:
+            app.approve(incident.id)
+    except LLMError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, indent=2))
+        return 1
+
+    print(json.dumps({"llm": app.reasoner.status(), "policy": {"autonomy_mode": app.settings.autonomy_mode.value, "confidence_threshold": app.settings.autonomous_confidence_threshold, "max_blast_radius": app.settings.max_blast_radius, "action_budget": app.settings.action_budget}, "incident": incident.to_dict(), "trace": app.trace(incident.id)}, indent=2))
     return 0
 
 
