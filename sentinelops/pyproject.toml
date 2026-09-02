@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sentinelops-agent"
+version = "0.2.0"
+description = "Policy-gated multi-agent incident response control plane with OpenAI reasoning, deterministic safety policy, simulation, and evals"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{name = "Raiyan Zaman"}]
+dependencies = ["python-dotenv>=1.0,<2"]
+
+[project.optional-dependencies]
+api = ["fastapi>=0.116,<1", "uvicorn[standard]>=0.35,<1"]
+llm = ["openai>=2.45,<3"]
+dev = ["fastapi>=0.116,<1", "httpx>=0.28,<1", "pytest>=8.3,<10"]
+all = ["fastapi>=0.116,<1", "httpx>=0.28,<1", "uvicorn[standard]>=0.35,<1", "pytest>=8.3,<10", "openai>=2.45,<3"]
+
+[project.scripts]
+sentinelops = "sentinelops.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["sentinelops*"]
+
+[tool.setuptools.package-data]
+sentinelops = ["runbooks.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

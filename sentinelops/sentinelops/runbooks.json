@@ -1,0 +1,29 @@
+[
+  {
+    "id": "RB-DEPLOY-001",
+    "title": "Rollback a regression after a production deployment",
+    "services": ["checkout", "payments", "catalog"],
+    "symptoms": ["error spike after deploy", "latency regression", "exceptions after release"],
+    "checks": ["compare error rate to deployment timestamp", "inspect exception signatures", "verify previous release health"],
+    "remediation": ["rollback to previous known-good deployment", "verify SLO recovery", "capture regression evidence"],
+    "tags": ["deployment", "rollback", "regression", "errors"]
+  },
+  {
+    "id": "RB-CAPACITY-002",
+    "title": "Recover a saturated stateless service",
+    "services": ["checkout", "payments", "catalog"],
+    "symptoms": ["high CPU", "worker pool saturated", "queue depth", "latency during traffic spike"],
+    "checks": ["inspect CPU and queue depth", "confirm downstream dependencies are healthy"],
+    "remediation": ["scale replicas within policy bounds", "verify latency and error rate", "open capacity follow-up"],
+    "tags": ["capacity", "autoscaling", "latency", "cpu"]
+  },
+  {
+    "id": "RB-CRASH-003",
+    "title": "Restore unhealthy or crash-looping replicas",
+    "services": ["checkout", "payments", "catalog"],
+    "symptoms": ["container exit 137", "replica failure", "crashloop", "restarting container"],
+    "checks": ["compare healthy vs desired replicas", "inspect recent process exits"],
+    "remediation": ["perform bounded rolling restart", "verify all desired replicas are healthy"],
+    "tags": ["crashloop", "replicas", "restart", "availability"]
+  }
+]
