@@ -1,6 +1,8 @@
 import base64
 import json
+from copy import deepcopy
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
 
@@ -11,12 +13,17 @@ from sentinelops.core import (
     AutonomyMode,
     CloudSimulator,
     EventStore,
+    IncidentStatus,
     Settings,
+    ToolRegistry,
     ToolResult,
 )
 from sentinelops.llm import LLMConfig, OpenAIReasoner
 from sentinelops.orchestrator import SentinelOrchestrator
 from sentinelops.persistence import (
+    FirestoreEventStore,
+    FirestoreExecutionLedger,
+    FirestoreIncidentStore,
     MemoryExecutionLedger,
     MemoryIncidentStore,
     incident_from_dict,
@@ -105,6 +112,25 @@ def test_aws_cloudwatch_and_ecs_provider():
     assert ecs.updates[0]["forceNewDeployment"] is True
     assert ecs.updates[1]["desiredCount"] == 6
     assert rollback["to_task_definition"].endswith(":6")
+
+
+def test_missing_cloudwatch_telemetry_fails_closed():
+    class EmptyCloudWatch(FakeCloudWatch):
+        def get_metric_statistics(self, **kwargs):
+            return {"Datapoints": []}
+
+    provider = AwsEcsProvider(
+        region="us-east-1",
+        cluster="production",
+        logs_client=FakeCloudWatchLogs(),
+        cloudwatch_client=EmptyCloudWatch(),
+        ecs_client=FakeEcs(),
+    )
+    result = ToolRegistry(provider).execute(
+        "get_service_health", {"service": "checkout"}
+    )
+    assert not result.ok
+    assert "no ErrorRate datapoints" in result.message
 
 
 class FakeMetricValue:
@@ -218,6 +244,15 @@ class FakeAppsApi:
     def patch_namespaced_deployment_scale(self, name, namespace, body):
         self.patches.append(("scale", body))
 
+    def list_namespaced_replica_set(self, namespace, label_selector):
+        previous = SimpleNamespace(
+            metadata=SimpleNamespace(
+                annotations={"deployment.kubernetes.io/revision": "3"}
+            ),
+            spec=SimpleNamespace(template=SimpleNamespace(name="revision-3-template")),
+        )
+        return SimpleNamespace(items=[previous])
+
 
 class FakeCoreApi:
     def list_namespaced_pod(self, *args, **kwargs):
@@ -241,7 +276,9 @@ def test_kubernetes_health_logs_restart_and_scale():
         apps_api=apps,
         core_api=FakeCoreApi(),
         custom_api=FakeCustomApi(),
-        api_client=SimpleNamespace(),
+        api_client=SimpleNamespace(
+            sanitize_for_serialization=lambda value: {"name": value.name}
+        ),
     )
     metrics = provider.metrics("checkout")
     assert metrics["healthy_replicas"] == 3
@@ -250,8 +287,11 @@ def test_kubernetes_health_logs_restart_and_scale():
     assert "checkout-abc" in provider.query_logs("checkout")["logs"][0]
     provider.restart_service("checkout")
     provider.scale_service("checkout", 5)
+    rollback = provider.rollback_deployment("checkout")
     assert apps.patches[0][0] == "deployment"
     assert apps.patches[1][1]["spec"]["replicas"] == 5
+    assert apps.patches[2][1]["spec"]["template"] == {"name": "revision-3-template"}
+    assert rollback["to_revision"] == 3
 
 
 def test_pubsub_push_ingestion_is_idempotent(monkeypatch):
@@ -303,3 +343,185 @@ def test_memory_execution_ledger_and_incident_roundtrip():
     )
     incident = app.create_incident("test", "checkout")
     assert incident_from_dict(incident.to_dict()).to_dict() == incident.to_dict()
+
+
+class FakeAlreadyExists(Exception):
+    pass
+
+
+class FakeSnapshot:
+    def __init__(self, data):
+        self._data = deepcopy(data)
+        self.exists = data is not None
+
+    def to_dict(self):
+        return deepcopy(self._data)
+
+
+class FakeDocument:
+    def __init__(self, client, path):
+        self.client = client
+        self.path = path
+
+    def get(self, transaction=None):
+        return FakeSnapshot(self.client.data.get(self.path))
+
+    def set(self, data, merge=False):
+        current = self.client.data.get(self.path, {}) if merge else {}
+        self.client.data[self.path] = {**deepcopy(current), **deepcopy(data)}
+
+    def create(self, data):
+        if self.path in self.client.data:
+            raise FakeAlreadyExists()
+        self.set(data)
+
+    def collection(self, name):
+        return FakeCollection(self.client, (*self.path, name))
+
+
+class FakeQuery:
+    def __init__(self, collection, field, direction=None):
+        self.collection = collection
+        self.field = field
+        self.direction = direction
+
+    def stream(self):
+        prefix = self.collection.path
+        rows = [
+            value
+            for path, value in self.collection.client.data.items()
+            if len(path) == len(prefix) + 1 and path[: len(prefix)] == prefix
+        ]
+        reverse = self.direction == "DESCENDING"
+        rows.sort(key=lambda item: item.get(self.field, 0), reverse=reverse)
+        return [FakeSnapshot(row) for row in rows]
+
+
+class FakeCollection:
+    def __init__(self, client, path):
+        self.client = client
+        self.path = path
+
+    def document(self, document_id):
+        return FakeDocument(self.client, (*self.path, document_id))
+
+    def order_by(self, field, direction=None):
+        return FakeQuery(self, field, direction)
+
+
+class FakeTransaction:
+    def set(self, reference, data, merge=False):
+        reference.set(data, merge=merge)
+
+
+class FakeFirestoreClient:
+    def __init__(self):
+        self.data = {}
+
+    def collection(self, name):
+        return FakeCollection(self, (name,))
+
+    def transaction(self):
+        return FakeTransaction()
+
+
+def passthrough_transactional(function):
+    return function
+
+
+def firestore_state(client):
+    return (
+        FirestoreIncidentStore(client, "test_incidents"),
+        FirestoreEventStore(
+            client,
+            "test_event_streams",
+            transactional=passthrough_transactional,
+        ),
+        FirestoreExecutionLedger(
+            client,
+            "test_execution_ledger",
+            already_exists_error=FakeAlreadyExists,
+        ),
+    )
+
+
+def test_firestore_persists_approval_trace_and_idempotency_across_restart():
+    client = FakeFirestoreClient()
+    provider = CloudSimulator()
+    incidents, events, ledger = firestore_state(client)
+    first = SentinelOrchestrator(
+        Settings(AutonomyMode.ASSISTED),
+        provider=provider,
+        incident_store=incidents,
+        event_store=events,
+        execution_ledger=ledger,
+        reasoner=deterministic_reasoner(),
+    )
+    provider.inject_fault("checkout", "bad_deployment")
+    incident = first.create_incident(
+        "checkout production SLO violation",
+        "checkout",
+        signals=[
+            api_module.build_signal(
+                "checkout",
+                "error_rate",
+                0.34,
+                0.05,
+                "regression after deployment",
+            )
+        ],
+    )
+    incident = first.respond(incident.id)
+    assert incident.status is IncidentStatus.AWAITING_APPROVAL
+    plan_hash = incident.pending_plan_hash
+
+    restarted_incidents, restarted_events, restarted_ledger = firestore_state(client)
+    restarted = SentinelOrchestrator(
+        Settings(AutonomyMode.ASSISTED),
+        provider=provider,
+        incident_store=restarted_incidents,
+        event_store=restarted_events,
+        execution_ledger=restarted_ledger,
+        reasoner=deterministic_reasoner(),
+    )
+    result = restarted.approve(
+        incident.id,
+        approver="on-call@example.com",
+        plan_hash=plan_hash,
+    )
+
+    assert result.status is IncidentStatus.RESOLVED
+    assert result.approval["approver"] == "on-call@example.com"
+    assert restarted.trace(incident.id)["verified"]
+    event_types = [
+        event["event_type"] for event in restarted.trace(incident.id)["events"]
+    ]
+    assert "human.approved" in event_types
+    action_key = result.executed_actions[0]["action"]["idempotency_key"]
+    acquired, prior = restarted_ledger.acquire(action_key)
+    assert not acquired and prior and prior.ok
+
+    event_paths = sorted(
+        path
+        for path in client.data
+        if path[:3] == ("test_event_streams", incident.id, "events")
+    )
+    client.data.pop(event_paths[-1])
+    assert not restarted_events.verify(incident.id)
+
+
+def test_gcp_deployment_wires_cloud_run_pubsub_firestore_and_secret_manager():
+    terraform = (Path(__file__).parents[1] / "deploy" / "gcp" / "main.tf").read_text()
+    assert 'resource "google_cloud_run_v2_service" "sentinelops"' in terraform
+    assert 'resource "google_pubsub_subscription" "alerts_push"' in terraform
+    assert 'resource "google_firestore_database" "state"' in terraform
+    assert 'name  = "SENTINELOPS_STATE_BACKEND"' in terraform
+    assert 'value = "firestore"' in terraform
+    assert 'name  = "SENTINELOPS_INFRA_BACKEND"' in terraform
+    assert 'value = "gcp_cloud_run"' in terraform
+    assert 'name = "OPENAI_API_KEY"' in terraform
+    assert "oidc_token {" in terraform
+    assert 'role     = "roles/run.invoker"' in terraform
+    assert (
+        'resource "google_pubsub_topic_iam_member" "dead_letter_publisher"' in terraform
+    )

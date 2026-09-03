@@ -13,7 +13,9 @@ from .orchestrator import SentinelOrchestrator, create_demo_incident
 
 
 def _add_llm_flags(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--backend", choices=["auto", "openai", "deterministic"], default=None)
+    parser.add_argument(
+        "--backend", choices=["auto", "openai", "deterministic"], default=None
+    )
     parser.add_argument("--model", default=None)
 
 
@@ -38,10 +40,19 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     demo = sub.add_parser("demo")
-    demo.add_argument("--fault", choices=["bad_deployment", "capacity", "crashloop"], default="bad_deployment")
-    demo.add_argument("--service", choices=["checkout", "payments", "catalog"], default="checkout")
-    demo.add_argument("--mode", choices=[m.value for m in AutonomyMode], default="assisted")
+    demo.add_argument(
+        "--fault",
+        choices=["bad_deployment", "capacity", "crashloop"],
+        default="bad_deployment",
+    )
+    demo.add_argument(
+        "--service", choices=["checkout", "payments", "catalog"], default="checkout"
+    )
+    demo.add_argument(
+        "--mode", choices=[m.value for m in AutonomyMode], default="assisted"
+    )
     demo.add_argument("--approve", action="store_true")
+    demo.add_argument("--approver", default="cli-user")
     _add_llm_flags(demo)
 
     sub.add_parser("doctor")
@@ -79,10 +90,25 @@ def main() -> int:
                     "additionalProperties": False,
                 },
             )
-            print(json.dumps({"ok": bool(result.data.get("ok")), "model": result.model, "response_id": result.response_id, "latency_ms": round(result.latency_ms, 3), "response": result.data}, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "ok": bool(result.data.get("ok")),
+                        "model": result.model,
+                        "response_id": result.response_id,
+                        "latency_ms": round(result.latency_ms, 3),
+                        "response": result.data,
+                    },
+                    indent=2,
+                )
+            )
             return 0 if result.data.get("ok") else 1
         except LLMError as exc:
-            print(json.dumps({"ok": False, "error": str(exc), "llm": reasoner.status()}, indent=2))
+            print(
+                json.dumps(
+                    {"ok": False, "error": str(exc), "llm": reasoner.status()}, indent=2
+                )
+            )
             return 1
 
     if args.command == "eval":
@@ -92,25 +118,56 @@ def main() -> int:
     _apply_llm_flags(args)
     ready, llm_status = _forced_openai_preflight()
     if not ready:
-        print(json.dumps({"ok": False, "error": "OpenAI backend was requested but is not configured", "llm": llm_status}, indent=2))
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": "OpenAI backend was requested but is not configured",
+                    "llm": llm_status,
+                },
+                indent=2,
+            )
+        )
         return 1
 
     if args.command == "serve":
         import uvicorn
+
         uvicorn.run("sentinelops.api:app", host=args.host, port=args.port)
         return 0
 
     try:
-        app = SentinelOrchestrator(settings_from_env(autonomy_mode=AutonomyMode(args.mode)))
+        app = SentinelOrchestrator(
+            settings_from_env(autonomy_mode=AutonomyMode(args.mode))
+        )
         incident = create_demo_incident(app, args.fault, args.service)
         app.respond(incident.id)
         if incident.pending_actions and args.approve:
-            app.approve(incident.id)
+            app.approve(
+                incident.id,
+                approver=args.approver,
+                plan_hash=incident.pending_plan_hash,
+            )
     except LLMError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, indent=2))
         return 1
 
-    print(json.dumps({"llm": app.reasoner.status(), "policy": {"autonomy_mode": app.settings.autonomy_mode.value, "confidence_threshold": app.settings.autonomous_confidence_threshold, "max_blast_radius": app.settings.max_blast_radius, "action_budget": app.settings.action_budget}, "incident": incident.to_dict(), "trace": app.trace(incident.id)}, indent=2))
+    print(
+        json.dumps(
+            {
+                "llm": app.reasoner.status(),
+                "policy": {
+                    "autonomy_mode": app.settings.autonomy_mode.value,
+                    "confidence_threshold": app.settings.autonomous_confidence_threshold,
+                    "max_blast_radius": app.settings.max_blast_radius,
+                    "action_budget": app.settings.action_budget,
+                },
+                "incident": incident.to_dict(),
+                "trace": app.trace(incident.id),
+            },
+            indent=2,
+        )
+    )
     return 0
 
 

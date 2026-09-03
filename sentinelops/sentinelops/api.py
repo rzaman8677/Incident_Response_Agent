@@ -17,7 +17,7 @@ from .orchestrator import SentinelOrchestrator, build_signal
 
 app = FastAPI(
     title="SentinelOps",
-    version="0.2.0",
+    version="0.3.0",
     description="Policy-gated multi-agent incident response control plane with OpenAI reasoning",
 )
 control_plane = SentinelOrchestrator()
@@ -49,6 +49,11 @@ class PubSubMessage(BaseModel):
 class PubSubEnvelope(BaseModel):
     message: PubSubMessage
     subscription: str | None = None
+
+
+class ApprovalCreate(BaseModel):
+    approver: str = Field(min_length=1, max_length=320)
+    plan_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
 @app.get("/")
@@ -179,11 +184,17 @@ def respond(incident_id: str):
 
 
 @app.post("/api/incidents/{incident_id}/approve")
-def approve(incident_id: str):
+def approve(incident_id: str, body: ApprovalCreate):
     try:
-        return control_plane.approve(incident_id).to_dict()
+        return control_plane.approve(
+            incident_id,
+            approver=body.approver,
+            plan_hash=body.plan_hash,
+        ).to_dict()
     except KeyError as exc:
         raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @app.get("/api/incidents/{incident_id}/trace")

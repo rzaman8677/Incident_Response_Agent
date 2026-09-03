@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 from threading import RLock
 from typing import Any
 
@@ -24,6 +27,7 @@ from .core import (
     Settings,
     Signal,
     ToolRegistry,
+    utcnow,
 )
 from .llm import LLMError, OpenAIReasoner
 from .persistence import state_from_env
@@ -74,7 +78,11 @@ class SentinelOrchestrator:
         self.planner = PlannerAgent(context)
         self.reviewer = ReviewerAgent(context)
         self.remediator = RemediatorAgent(context)
-        self.verifier = VerifierAgent(context)
+        self.verifier = VerifierAgent(
+            context,
+            attempts=self.settings.verification_attempts,
+            interval_seconds=self.settings.verification_interval_seconds,
+        )
         # Kept as a compatibility view for existing simulator callers. Durable
         # backends remain authoritative through incident_store.
         self.incidents: dict[str, Incident] = getattr(self.incident_store, "items", {})
@@ -105,22 +113,17 @@ class SentinelOrchestrator:
         )
         return incident
 
-    def respond(self, incident_id: str, approved: bool = False) -> Incident:
+    def respond(self, incident_id: str) -> Incident:
         incident = self.get(incident_id)
         if incident.status is IncidentStatus.AWAITING_APPROVAL:
-            if not approved:
-                return incident
-            actions = self._pending.pop(incident.id, None)
-            if actions is None:
-                actions = [
-                    self._proposal_from_dict(item) for item in incident.pending_actions
-                ]
-            self.events.append(
-                incident.id,
-                "human.approved",
-                {"actions": [a.to_dict() for a in actions]},
-            )
-            return self._execute_and_verify(incident, actions)
+            return incident
+        if incident.status in {
+            IncidentStatus.EXECUTING,
+            IncidentStatus.VERIFYING,
+            IncidentStatus.RESOLVED,
+            IncidentStatus.ESCALATED,
+        }:
+            return incident
 
         incident.touch(IncidentStatus.INVESTIGATING)
         self.incident_store.save(incident)
@@ -162,6 +165,7 @@ class SentinelOrchestrator:
                 action.risk = RiskLevel.MEDIUM
             action.blast_radius = max(1, action.blast_radius)
             action.confidence = min(action.confidence, incident.confidence)
+            action.idempotency_key = self._action_key(incident.id, action)
 
             decision = self.policy.evaluate(action)
             self.events.append(
@@ -179,23 +183,58 @@ class SentinelOrchestrator:
             elif decision.requires_approval:
                 gated.append(action)
 
-        if gated and not approved:
-            self._pending[incident.id] = gated
-            incident.pending_actions = [a.to_dict() for a in gated]
+        if gated:
+            pending = [*executable, *gated]
+            self._pending[incident.id] = pending
+            incident.pending_actions = [a.to_dict() for a in pending]
+            incident.pending_plan_hash = self._plan_hash(incident.pending_actions)
             incident.touch(IncidentStatus.AWAITING_APPROVAL)
             self.events.append(
                 incident.id,
                 "orchestrator.awaiting_approval",
-                {"actions": incident.pending_actions},
+                {
+                    "actions": incident.pending_actions,
+                    "plan_hash": incident.pending_plan_hash,
+                },
             )
             self.incident_store.save(incident)
             return incident
-        if approved:
-            executable.extend(gated)
         return self._execute_and_verify(incident, executable)
 
-    def approve(self, incident_id: str) -> Incident:
-        return self.respond(incident_id, approved=True)
+    def approve(self, incident_id: str, *, approver: str, plan_hash: str) -> Incident:
+        incident = self.get(incident_id)
+        if incident.status is not IncidentStatus.AWAITING_APPROVAL:
+            raise ValueError("incident is not awaiting approval")
+        expected = self._plan_hash(incident.pending_actions)
+        if not incident.pending_plan_hash or not hmac.compare_digest(
+            incident.pending_plan_hash, expected
+        ):
+            raise ValueError("stored remediation plan failed integrity validation")
+        if not hmac.compare_digest(plan_hash, expected):
+            raise ValueError("approval does not match the current remediation plan")
+        identity = approver.strip()
+        if not identity:
+            raise ValueError("approver identity is required")
+        actions = self._pending.pop(incident.id, None)
+        if actions is None:
+            actions = [
+                self._proposal_from_dict(item) for item in incident.pending_actions
+            ]
+        incident.approval = {
+            "approver": identity,
+            "plan_hash": expected,
+            "approved_at": utcnow(),
+        }
+        self.incident_store.save(incident)
+        self.events.append(
+            incident.id,
+            "human.approved",
+            {
+                **incident.approval,
+                "actions": [a.to_dict() for a in actions],
+            },
+        )
+        return self._execute_and_verify(incident, actions)
 
     def get(self, incident_id: str) -> Incident:
         incident = self.incident_store.get(incident_id)
@@ -264,6 +303,27 @@ class SentinelOrchestrator:
             confidence=float(data.get("confidence", 0.0)),
             idempotency_key=data["idempotency_key"],
         )
+
+    @staticmethod
+    def _plan_hash(actions: list[dict[str, Any]]) -> str:
+        canonical = json.dumps(
+            actions, sort_keys=True, separators=(",", ":"), default=str
+        )
+        return hashlib.sha256(canonical.encode()).hexdigest()
+
+    @staticmethod
+    def _action_key(incident_id: str, action: ActionProposal) -> str:
+        canonical = json.dumps(
+            {
+                "incident_id": incident_id,
+                "tool": action.tool,
+                "args": action.args,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        return hashlib.sha256(canonical.encode()).hexdigest()
 
     @staticmethod
     def _root_cause(findings) -> str:

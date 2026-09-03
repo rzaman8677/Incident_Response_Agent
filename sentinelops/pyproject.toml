@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sentinelops-agent"
-version = "0.2.0"
+version = "0.3.0"
 description = "Policy-gated multi-agent incident response control plane with OpenAI reasoning, deterministic safety policy, simulation, and evals"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -22,7 +22,12 @@ gcp = [
   "google-cloud-run>=0.10,<1",
 ]
 kubernetes = ["kubernetes>=32,<40"]
-dev = ["fastapi>=0.116,<1", "httpx>=0.28,<1", "pytest>=8.3,<10"]
+dev = [
+  "fastapi>=0.116,<1",
+  "httpx>=0.28,<1",
+  "pytest>=8.3,<10",
+  "ruff>=0.12,<1",
+]
 all = ["fastapi>=0.116,<1", "httpx>=0.28,<1", "uvicorn[standard]>=0.35,<1", "pytest>=8.3,<10", "openai>=2.45,<3"]
 production = [
   "fastapi>=0.116,<1",
