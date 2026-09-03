@@ -4,7 +4,7 @@ SentinelOps treats all model output as **untrusted proposals** until it passes d
 
 ## LLM trust boundary
 
-The LLM-backed Investigator receives read-only incident context: alert signals, current simulator telemetry, logs, service health, and retrieved runbooks. Structured output constrains the finding schema, and model findings are grounded against observed deterministic telemetry signatures before they can drive remediation.
+The LLM-backed Investigator receives read-only incident context: alert signals, provider telemetry, logs, service health, and retrieved runbooks. Structured output constrains the finding schema, and model findings are grounded against observed deterministic telemetry signatures before they can drive remediation.
 
 The LLM-backed Planner receives the grounded findings plus a small allowlist of supported write tools. It can propose only `rollback_deployment`, `scale_service`, or `restart_service`. A deterministic Reviewer rejects wrong-service, duplicate, out-of-range, or root-cause-inconsistent proposals before policy evaluation.
 
@@ -55,6 +55,8 @@ Incident events are SHA-256 hash chained. LLM-stage events record non-secret met
 
 The system never equates a successful tool response with incident resolution. A separate verifier re-reads service health and SLO metrics; failed verification escalates the incident.
 
-## Production hardening before real infrastructure
+## Real infrastructure adapters
 
-Before connecting the project to real cloud control planes, add workload identity and least-privilege IAM, signed/RBAC approval identity, durable event and idempotency storage, per-tool schemas, rate limits/circuit breakers, network egress controls, prompt-injection defenses for untrusted logs/runbooks, secret-manager integration, model-call budgets, prompt/version provenance, and security review for each state-changing adapter.
+AWS, GCP, and Kubernetes SDK clients use ambient workload credentials. Firestore provides durable incident, event, and idempotency state. Missing telemetry fails closed, provider exceptions become failed tool results, and write calls remain behind deterministic review and policy.
+
+Do not give the public API container broad production write access in a sensitive deployment. Put the remediator behind a separately authenticated service with a resource-scoped write identity. Also add signed/RBAC-bound approval identity, per-tool rate limits and circuit breakers, network egress controls, redaction and prompt-injection defenses for untrusted logs/runbooks, secret-manager integration, model-call budgets, prompt/version provenance, and a security review for every enabled mutation adapter.

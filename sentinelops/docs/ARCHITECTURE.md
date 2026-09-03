@@ -52,11 +52,11 @@ Every material transition, reasoning stage, policy decision, approval, and tool 
 
 LLM events record non-secret metadata such as backend, model, response ID, latency, and accepted proposals. API keys are never added to the event payload.
 
-The demo store is in memory, but the interface is intentionally narrow enough to replace with Kafka, DynamoDB, or an append-only Postgres table.
+The default demo store is in memory. `SENTINELOPS_STATE_BACKEND=firestore` selects durable incident snapshots, transactionally appended event chains, and a persistent idempotency ledger so Cloud Run instances can resume approval-gated work.
 
 ## Tool boundary
 
-The simulator exposes read-only diagnostic tools:
+Every infrastructure provider exposes read-only diagnostic tools:
 
 - `get_service_health`
 - `get_metrics`
@@ -68,7 +68,14 @@ and state-changing remediation tools:
 - `scale_service`
 - `rollback_deployment`
 
-The LLM does not directly call these functions. A production adapter can implement the same contract for Kubernetes, ECS, CloudWatch, Datadog, or an internal platform without moving authorization into the model.
+The LLM does not directly call these functions. Implemented providers are:
+
+- `simulator`: in-memory deterministic demo
+- `aws_ecs`: CloudWatch Logs/Metrics with ECS control APIs
+- `gcp_cloud_run`: Cloud Logging/Monitoring with Cloud Run v2 control APIs
+- `kubernetes` / `eks` / `gke`: pod logs, metrics API, Deployment and ReplicaSet APIs
+
+See [PRODUCTION_INTEGRATIONS.md](PRODUCTION_INTEGRATIONS.md) for provider configuration, metric contracts, and identity requirements.
 
 ## Runbook retrieval
 
@@ -80,4 +87,4 @@ When the OpenAI backend is active and a model request fails, `SENTINELOPS_LLM_FA
 
 ## Production extension path
 
-A production version would add durable workflow execution, distributed leases, external idempotency storage, tool-specific retry/circuit-breaker policy, RBAC-signed approvals, OpenTelemetry traces, workload identity, prompt/version provenance, model-call budgets, and durable incident/event persistence. Those concerns can be added behind existing interfaces without moving policy authority into the model.
+The repository now includes real provider and Firestore adapters. A hardened deployment should still separate read and write identities/services, cryptographically bind approval identity to the plan, add provider-specific retry/circuit-breaker policy, protect network egress, emit OpenTelemetry traces, and add prompt/version provenance and model-call budgets. Those concerns remain outside model authority.

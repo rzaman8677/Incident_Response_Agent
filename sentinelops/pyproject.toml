@@ -14,8 +14,27 @@ dependencies = ["python-dotenv>=1.0,<2"]
 [project.optional-dependencies]
 api = ["fastapi>=0.116,<1", "uvicorn[standard]>=0.35,<1"]
 llm = ["openai>=2.45,<3"]
+aws = ["boto3>=1.35,<2"]
+gcp = [
+  "google-cloud-firestore>=2.20,<3",
+  "google-cloud-logging>=3.12,<4",
+  "google-cloud-monitoring>=2.27,<3",
+  "google-cloud-run>=0.10,<1",
+]
+kubernetes = ["kubernetes>=32,<40"]
 dev = ["fastapi>=0.116,<1", "httpx>=0.28,<1", "pytest>=8.3,<10"]
 all = ["fastapi>=0.116,<1", "httpx>=0.28,<1", "uvicorn[standard]>=0.35,<1", "pytest>=8.3,<10", "openai>=2.45,<3"]
+production = [
+  "fastapi>=0.116,<1",
+  "uvicorn[standard]>=0.35,<1",
+  "openai>=2.45,<3",
+  "boto3>=1.35,<2",
+  "google-cloud-firestore>=2.20,<3",
+  "google-cloud-logging>=3.12,<4",
+  "google-cloud-monitoring>=2.27,<3",
+  "google-cloud-run>=0.10,<1",
+  "kubernetes>=32,<40",
+]
 
 [project.scripts]
 sentinelops = "sentinelops.cli:main"
