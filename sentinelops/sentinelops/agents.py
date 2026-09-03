@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from .core import ActionProposal, EventStore, Finding, Incident, RiskLevel, Runbook, ToolRegistry, ToolResult
+from .core import (
+    ActionProposal,
+    EventStore,
+    Finding,
+    Incident,
+    RiskLevel,
+    Runbook,
+    ToolRegistry,
+    ToolResult,
+)
 from .llm import LLMError, OpenAIReasoner
-
 
 FINDING_KINDS = [
     "bad_deployment",
@@ -48,16 +57,38 @@ PLAN_SCHEMA: dict[str, Any] = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "tool": {"type": "string", "enum": ["rollback_deployment", "scale_service", "restart_service"]},
-                    "service": {"type": "string", "enum": ["checkout", "payments", "catalog"]},
+                    "tool": {
+                        "type": "string",
+                        "enum": [
+                            "rollback_deployment",
+                            "scale_service",
+                            "restart_service",
+                        ],
+                    },
+                    "service": {
+                        "type": "string",
+                        "enum": ["checkout", "payments", "catalog"],
+                    },
                     "replicas": {"type": "integer", "minimum": 0, "maximum": 10},
                     "rationale": {"type": "string"},
                     "expected_effect": {"type": "string"},
-                    "risk": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
+                    "risk": {
+                        "type": "string",
+                        "enum": ["low", "medium", "high", "critical"],
+                    },
                     "blast_radius": {"type": "integer", "minimum": 1, "maximum": 10},
                     "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                 },
-                "required": ["tool", "service", "replicas", "rationale", "expected_effect", "risk", "blast_radius", "confidence"],
+                "required": [
+                    "tool",
+                    "service",
+                    "replicas",
+                    "rationale",
+                    "expected_effect",
+                    "risk",
+                    "blast_radius",
+                    "confidence",
+                ],
                 "additionalProperties": False,
             },
         }
@@ -72,6 +103,7 @@ class AgentContext:
     tools: ToolRegistry
     events: EventStore
     reasoner: OpenAIReasoner | None = None
+    execution_ledger: Any | None = None
 
 
 class Agent:
@@ -89,16 +121,23 @@ class Agent:
 
     @property
     def deterministic_fallback(self) -> bool:
-        return not self.context.reasoner or self.context.reasoner.config.fallback_to_deterministic
+        return (
+            not self.context.reasoner
+            or self.context.reasoner.config.fallback_to_deterministic
+        )
 
 
 class InvestigatorAgent(Agent):
     name = "investigator"
 
     def investigate(self, incident: Incident, runbooks: list[Runbook]) -> list[Finding]:
-        metrics = self.context.tools.execute("get_metrics", {"service": incident.service})
+        metrics = self.context.tools.execute(
+            "get_metrics", {"service": incident.service}
+        )
         logs = self.context.tools.execute("query_logs", {"service": incident.service})
-        health = self.context.tools.execute("get_service_health", {"service": incident.service})
+        health = self.context.tools.execute(
+            "get_service_health", {"service": incident.service}
+        )
         deterministic = self._deterministic_findings(metrics, logs)
         findings = deterministic
         reasoning = {"backend": "deterministic"}
@@ -120,7 +159,9 @@ class InvestigatorAgent(Agent):
                     },
                     schema=FINDINGS_SCHEMA,
                 )
-                findings = self._ground_llm_findings(result.data.get("findings", []), deterministic)
+                findings = self._ground_llm_findings(
+                    result.data.get("findings", []), deterministic
+                )
                 reasoning = {
                     "backend": "openai",
                     "model": result.model,
@@ -128,7 +169,11 @@ class InvestigatorAgent(Agent):
                     "latency_ms": round(result.latency_ms, 3),
                 }
             except LLMError as exc:
-                self.emit(incident.id, "llm_fallback", {"stage": "investigation", "error": str(exc)})
+                self.emit(
+                    incident.id,
+                    "llm_fallback",
+                    {"stage": "investigation", "error": str(exc)},
+                )
                 if not self.deterministic_fallback:
                     raise
 
@@ -150,25 +195,72 @@ class InvestigatorAgent(Agent):
         if metrics.ok:
             m = metrics.output
             if m["error_rate"] >= 0.10:
-                findings.append(Finding("error_spike", f"error rate is {m['error_rate']:.0%}", 0.95, m))
+                findings.append(
+                    Finding(
+                        "error_spike", f"error rate is {m['error_rate']:.0%}", 0.95, m
+                    )
+                )
             if m["p95_latency_ms"] >= 1000:
-                findings.append(Finding("latency_spike", f"p95 latency is {m['p95_latency_ms']:.0f}ms", 0.94, m))
+                findings.append(
+                    Finding(
+                        "latency_spike",
+                        f"p95 latency is {m['p95_latency_ms']:.0f}ms",
+                        0.94,
+                        m,
+                    )
+                )
             if m["cpu_percent"] >= 85:
-                findings.append(Finding("capacity_pressure", f"CPU is {m['cpu_percent']:.0f}%", 0.96, m))
+                findings.append(
+                    Finding(
+                        "capacity_pressure", f"CPU is {m['cpu_percent']:.0f}%", 0.96, m
+                    )
+                )
             if m["healthy_replicas"] < m["replicas"]:
-                findings.append(Finding("replica_failure", "healthy replicas below desired replicas", 0.97, m))
+                findings.append(
+                    Finding(
+                        "replica_failure",
+                        "healthy replicas below desired replicas",
+                        0.97,
+                        m,
+                    )
+                )
         if logs.ok:
             joined = " ".join(logs.output.get("logs", [])).lower()
-            if "deploy" in joined and ("exception" in joined or "errors persist" in joined):
-                findings.append(Finding("bad_deployment", "errors correlate with the current deployment", 0.93, logs.output))
+            if "deploy" in joined and (
+                "exception" in joined or "errors persist" in joined
+            ):
+                findings.append(
+                    Finding(
+                        "bad_deployment",
+                        "errors correlate with the current deployment",
+                        0.93,
+                        logs.output,
+                    )
+                )
             if "saturated" in joined or "queue_depth" in joined:
-                findings.append(Finding("capacity_pressure", "worker pool saturation found in logs", 0.92, logs.output))
+                findings.append(
+                    Finding(
+                        "capacity_pressure",
+                        "worker pool saturation found in logs",
+                        0.92,
+                        logs.output,
+                    )
+                )
             if "code=137" in joined or "restarting container" in joined:
-                findings.append(Finding("crashloop", "containers are repeatedly exiting", 0.94, logs.output))
+                findings.append(
+                    Finding(
+                        "crashloop",
+                        "containers are repeatedly exiting",
+                        0.94,
+                        logs.output,
+                    )
+                )
         return findings
 
     @staticmethod
-    def _ground_llm_findings(raw_findings: list[dict[str, Any]], deterministic: list[Finding]) -> list[Finding]:
+    def _ground_llm_findings(
+        raw_findings: list[dict[str, Any]], deterministic: list[Finding]
+    ) -> list[Finding]:
         supported = {finding.kind: finding for finding in deterministic}
         if not supported:
             return [
@@ -176,7 +268,10 @@ class InvestigatorAgent(Agent):
                     str(item["kind"]),
                     str(item["detail"]),
                     min(float(item["confidence"]), 0.70),
-                    {"source": "llm", "grounding": "no deterministic signature matched"},
+                    {
+                        "source": "llm",
+                        "grounding": "no deterministic signature matched",
+                    },
                 )
                 for item in raw_findings
                 if item.get("kind") in FINDING_KINDS
@@ -193,7 +288,10 @@ class InvestigatorAgent(Agent):
                 Finding(
                     kind,
                     str(item.get("detail") or baseline.detail),
-                    min(max(float(item.get("confidence", baseline.confidence)), 0.0), baseline.confidence),
+                    min(
+                        max(float(item.get("confidence", baseline.confidence)), 0.0),
+                        baseline.confidence,
+                    ),
                     {"source": "openai+telemetry", "observed": baseline.evidence},
                 )
             )
@@ -211,7 +309,13 @@ class PlannerAgent(Agent):
     def plan(self, incident: Incident, findings: list[Finding]) -> list[ActionProposal]:
         if self.llm_enabled:
             try:
-                current = self.context.tools.execute("get_metrics", {"service": incident.service})
+                current = self.context.tools.execute(
+                    "get_metrics", {"service": incident.service}
+                )
+                plan_schema = deepcopy(PLAN_SCHEMA)
+                plan_schema["properties"]["actions"]["items"]["properties"]["service"][
+                    "enum"
+                ] = [incident.service]
                 result = self.context.reasoner.generate_json(
                     schema_name="sentinelops_remediation_plan",
                     instructions=(
@@ -223,12 +327,21 @@ class PlannerAgent(Agent):
                         "incident": incident.to_dict(),
                         "findings": [asdict(finding) for finding in findings],
                         "current_metrics": current.output if current.ok else {},
-                        "available_write_tools": ["rollback_deployment", "scale_service", "restart_service"],
-                        "constraints": {"max_scale_replicas": 10, "prefer_single_action": True},
+                        "available_write_tools": [
+                            "rollback_deployment",
+                            "scale_service",
+                            "restart_service",
+                        ],
+                        "constraints": {
+                            "max_scale_replicas": 10,
+                            "prefer_single_action": True,
+                        },
                     },
-                    schema=PLAN_SCHEMA,
+                    schema=plan_schema,
                 )
-                actions = self._actions_from_llm(incident, findings, result.data.get("actions", []))
+                actions = self._actions_from_llm(
+                    incident, findings, result.data.get("actions", [])
+                )
                 self.emit(
                     incident.id,
                     "llm_completed",
@@ -240,32 +353,86 @@ class PlannerAgent(Agent):
                     },
                 )
                 if actions or not self.deterministic_fallback:
-                    self.emit(incident.id, "created", {"actions": [a.to_dict() for a in actions], "backend": "openai"})
+                    self.emit(
+                        incident.id,
+                        "created",
+                        {
+                            "actions": [a.to_dict() for a in actions],
+                            "backend": "openai",
+                        },
+                    )
                     return actions
             except LLMError as exc:
-                self.emit(incident.id, "llm_fallback", {"stage": "planning", "error": str(exc)})
+                self.emit(
+                    incident.id,
+                    "llm_fallback",
+                    {"stage": "planning", "error": str(exc)},
+                )
                 if not self.deterministic_fallback:
                     raise
 
         actions = self._deterministic_plan(incident, findings)
-        self.emit(incident.id, "created", {"actions": [a.to_dict() for a in actions], "backend": "deterministic"})
+        self.emit(
+            incident.id,
+            "created",
+            {"actions": [a.to_dict() for a in actions], "backend": "deterministic"},
+        )
         return actions
 
-    def _deterministic_plan(self, incident: Incident, findings: list[Finding]) -> list[ActionProposal]:
+    def _deterministic_plan(
+        self, incident: Incident, findings: list[Finding]
+    ) -> list[ActionProposal]:
         kinds = {f.kind for f in findings}
         confidence = max((f.confidence for f in findings), default=0.5)
         actions: list[ActionProposal] = []
         if "bad_deployment" in kinds:
-            actions.append(ActionProposal("rollback_deployment", {"service": incident.service}, "errors correlate with a bad deployment", "restore known-good release", RiskLevel.MEDIUM, 1, confidence))
+            actions.append(
+                ActionProposal(
+                    "rollback_deployment",
+                    {"service": incident.service},
+                    "errors correlate with a bad deployment",
+                    "restore known-good release",
+                    RiskLevel.MEDIUM,
+                    1,
+                    confidence,
+                )
+            )
         elif "capacity_pressure" in kinds:
-            current = self.context.tools.execute("get_metrics", {"service": incident.service})
+            current = self.context.tools.execute(
+                "get_metrics", {"service": incident.service}
+            )
             replicas = int(current.output.get("replicas", 3)) if current.ok else 3
-            actions.append(ActionProposal("scale_service", {"service": incident.service, "replicas": min(replicas * 2, 10)}, "CPU/queue saturation indicates insufficient capacity", "reduce per-replica load", RiskLevel.MEDIUM, 1, confidence))
+            actions.append(
+                ActionProposal(
+                    "scale_service",
+                    {"service": incident.service, "replicas": min(replicas * 2, 10)},
+                    "CPU/queue saturation indicates insufficient capacity",
+                    "reduce per-replica load",
+                    RiskLevel.MEDIUM,
+                    1,
+                    confidence,
+                )
+            )
         elif "replica_failure" in kinds or "crashloop" in kinds:
-            actions.append(ActionProposal("restart_service", {"service": incident.service}, "replicas are unhealthy", "restore desired healthy replicas", RiskLevel.MEDIUM, 1, confidence))
+            actions.append(
+                ActionProposal(
+                    "restart_service",
+                    {"service": incident.service},
+                    "replicas are unhealthy",
+                    "restore desired healthy replicas",
+                    RiskLevel.MEDIUM,
+                    1,
+                    confidence,
+                )
+            )
         return actions
 
-    def _actions_from_llm(self, incident: Incident, findings: list[Finding], raw_actions: list[dict[str, Any]]) -> list[ActionProposal]:
+    def _actions_from_llm(
+        self,
+        incident: Incident,
+        findings: list[Finding],
+        raw_actions: list[dict[str, Any]],
+    ) -> list[ActionProposal]:
         kinds = {finding.kind for finding in findings}
         expected_tool = None
         if "bad_deployment" in kinds:
@@ -279,7 +446,11 @@ class PlannerAgent(Agent):
         for item in raw_actions:
             tool = str(item.get("tool", ""))
             service = str(item.get("service", ""))
-            if service != incident.service or tool not in {"rollback_deployment", "scale_service", "restart_service"}:
+            if service != incident.service or tool not in {
+                "rollback_deployment",
+                "scale_service",
+                "restart_service",
+            }:
                 continue
             if expected_tool and tool != expected_tool:
                 continue
@@ -294,7 +465,9 @@ class PlannerAgent(Agent):
                     tool=tool,
                     args=args,
                     rationale=str(item.get("rationale", "model-proposed remediation")),
-                    expected_effect=str(item.get("expected_effect", "restore service health")),
+                    expected_effect=str(
+                        item.get("expected_effect", "restore service health")
+                    ),
                     risk=RiskLevel(str(item.get("risk", "medium"))),
                     blast_radius=int(item.get("blast_radius", 1)),
                     confidence=float(item.get("confidence", 0.5)),
@@ -306,7 +479,9 @@ class PlannerAgent(Agent):
 class ReviewerAgent(Agent):
     name = "reviewer"
 
-    def review(self, incident: Incident, actions: list[ActionProposal]) -> list[ActionProposal]:
+    def review(
+        self, incident: Incident, actions: list[ActionProposal]
+    ) -> list[ActionProposal]:
         accepted: list[ActionProposal] = []
         seen = set()
         expected = {
@@ -316,16 +491,24 @@ class ReviewerAgent(Agent):
             "replica_failure": "restart_service",
         }.get(incident.root_cause)
         for action in actions:
-            signature = (action.tool, tuple(sorted((k, str(v)) for k, v in action.args.items())))
+            signature = (
+                action.tool,
+                tuple(sorted((k, str(v)) for k, v in action.args.items())),
+            )
             if signature in seen or action.args.get("service") != incident.service:
                 continue
             if expected and action.tool != expected:
                 continue
-            if action.tool == "scale_service" and not 1 <= int(action.args.get("replicas", 0)) <= 10:
+            if (
+                action.tool == "scale_service"
+                and not 1 <= int(action.args.get("replicas", 0)) <= 10
+            ):
                 continue
             seen.add(signature)
             accepted.append(action)
-        self.emit(incident.id, "completed", {"accepted": [a.to_dict() for a in accepted]})
+        self.emit(
+            incident.id, "completed", {"accepted": [a.to_dict() for a in accepted]}
+        )
         return accepted
 
 
@@ -341,14 +524,30 @@ class RemediatorAgent(Agent):
 
     def __init__(self, context: AgentContext) -> None:
         super().__init__(context)
-        self._ledger: dict[str, ToolResult] = {}
 
     def execute(self, incident_id: str, action: ActionProposal) -> ExecutionRecord:
-        if action.idempotency_key in self._ledger:
-            return ExecutionRecord(action, self._ledger[action.idempotency_key], True)
+        acquired, previous = self.context.execution_ledger.acquire(
+            action.idempotency_key
+        )
+        if not acquired:
+            return ExecutionRecord(
+                action,
+                previous or ToolResult(False, {}, "action is already executing"),
+                True,
+            )
         result = self.context.tools.execute(action.tool, action.args)
-        self._ledger[action.idempotency_key] = result
-        self.emit(incident_id, "executed", {"action": action.to_dict(), "ok": result.ok, "output": result.output, "latency_ms": round(result.latency_ms, 3), "message": result.message})
+        self.context.execution_ledger.complete(action.idempotency_key, result)
+        self.emit(
+            incident_id,
+            "executed",
+            {
+                "action": action.to_dict(),
+                "ok": result.ok,
+                "output": result.output,
+                "latency_ms": round(result.latency_ms, 3),
+                "message": result.message,
+            },
+        )
         return ExecutionRecord(action, result)
 
 
@@ -356,8 +555,16 @@ class VerifierAgent(Agent):
     name = "verifier"
 
     def verify(self, incident: Incident) -> dict:
-        health = self.context.tools.execute("get_service_health", {"service": incident.service})
-        metrics = self.context.tools.execute("get_metrics", {"service": incident.service})
-        result = {"recovered": bool(health.ok and health.output.get("healthy")), "health": health.output if health.ok else {}, "metrics": metrics.output if metrics.ok else {}}
+        health = self.context.tools.execute(
+            "get_service_health", {"service": incident.service}
+        )
+        metrics = self.context.tools.execute(
+            "get_metrics", {"service": incident.service}
+        )
+        result = {
+            "recovered": bool(health.ok and health.output.get("healthy")),
+            "health": health.output if health.ok else {},
+            "metrics": metrics.output if metrics.ok else {},
+        }
         self.emit(incident.id, "completed", result)
         return result

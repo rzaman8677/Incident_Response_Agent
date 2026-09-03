@@ -1,23 +1,23 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import re
+import uuid
 from collections import defaultdict
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-import hashlib
-import json
 from pathlib import Path
-import re
 from threading import RLock
 from time import perf_counter
-from typing import Any
-import uuid
+from typing import Any, ClassVar
 
 
 def utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class IncidentStatus(str, Enum):
@@ -152,13 +152,24 @@ class EventStore:
         self._events: dict[str, list[Event]] = defaultdict(list)
         self._lock = RLock()
 
-    def append(self, incident_id: str, event_type: str, payload: dict[str, Any]) -> Event:
+    def append(
+        self, incident_id: str, event_type: str, payload: dict[str, Any]
+    ) -> Event:
         with self._lock:
             stream = self._events[incident_id]
             previous_hash = stream[-1].hash if stream else "GENESIS"
             sequence = len(stream) + 1
-            canonical = self._canonical(incident_id, event_type, payload, sequence, previous_hash)
-            event = Event(incident_id=incident_id, event_type=event_type, payload=payload, sequence=sequence, previous_hash=previous_hash, hash=hashlib.sha256(canonical.encode()).hexdigest())
+            canonical = self._canonical(
+                incident_id, event_type, payload, sequence, previous_hash
+            )
+            event = Event(
+                incident_id=incident_id,
+                event_type=event_type,
+                payload=payload,
+                sequence=sequence,
+                previous_hash=previous_hash,
+                hash=hashlib.sha256(canonical.encode()).hexdigest(),
+            )
             stream.append(event)
             return event
 
@@ -168,7 +179,13 @@ class EventStore:
     def verify(self, incident_id: str) -> bool:
         previous = "GENESIS"
         for event in self._events.get(incident_id, []):
-            canonical = self._canonical(event.incident_id, event.event_type, event.payload, event.sequence, previous)
+            canonical = self._canonical(
+                event.incident_id,
+                event.event_type,
+                event.payload,
+                event.sequence,
+                previous,
+            )
             expected = hashlib.sha256(canonical.encode()).hexdigest()
             if event.previous_hash != previous or event.hash != expected:
                 return False
@@ -176,12 +193,33 @@ class EventStore:
         return True
 
     @staticmethod
-    def _canonical(incident_id: str, event_type: str, payload: dict[str, Any], sequence: int, previous_hash: str) -> str:
-        return json.dumps({"incident_id": incident_id, "event_type": event_type, "payload": payload, "sequence": sequence, "previous_hash": previous_hash}, sort_keys=True, separators=(",", ":"), default=str)
+    def _canonical(
+        incident_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+        sequence: int,
+        previous_hash: str,
+    ) -> str:
+        return json.dumps(
+            {
+                "incident_id": incident_id,
+                "event_type": event_type,
+                "payload": payload,
+                "sequence": sequence,
+                "previous_hash": previous_hash,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
 
 
 class PolicyEngine:
-    WRITE_TOOLS = {"restart_service", "scale_service", "rollback_deployment"}
+    WRITE_TOOLS: ClassVar[set[str]] = {
+        "restart_service",
+        "scale_service",
+        "rollback_deployment",
+    }
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -192,9 +230,13 @@ class PolicyEngine:
         if self.settings.autonomy_mode is AutonomyMode.OBSERVE:
             return PolicyDecision(False, True, "observe mode forbids state changes")
         if action.risk in {RiskLevel.HIGH, RiskLevel.CRITICAL}:
-            return PolicyDecision(False, True, f"{action.risk.value}-risk actions always require approval")
+            return PolicyDecision(
+                False, True, f"{action.risk.value}-risk actions always require approval"
+            )
         if action.blast_radius > self.settings.max_blast_radius:
-            return PolicyDecision(False, True, "blast radius exceeds configured autonomous limit")
+            return PolicyDecision(
+                False, True, "blast radius exceeds configured autonomous limit"
+            )
         if self.settings.autonomy_mode is AutonomyMode.ASSISTED:
             return PolicyDecision(False, True, "assisted mode requires human approval")
         if action.confidence < self.settings.autonomous_confidence_threshold:
@@ -227,7 +269,9 @@ class RunbookRetriever:
         for rb in self.runbooks:
             corpus = " ".join([rb.title, *rb.services, *rb.symptoms, *rb.tags]).lower()
             overlap = len(query_tokens & set(_TOKEN.findall(corpus)))
-            service_bonus = 4 if service.lower() in {s.lower() for s in rb.services} else 0
+            service_bonus = (
+                4 if service.lower() in {s.lower() for s in rb.services} else 0
+            )
             scored.append((overlap + service_bonus, rb))
         scored.sort(key=lambda item: item[0], reverse=True)
         return [rb for score, rb in scored[:limit] if score > 0]
@@ -249,8 +293,12 @@ class ServiceState:
 class CloudSimulator:
     """Deterministic cloud control plane for zero-credential demos/evals."""
 
+    backend_name = "simulator"
+
     def __init__(self) -> None:
-        self.services = {name: ServiceState(name) for name in ("checkout", "payments", "catalog")}
+        self.services = {
+            name: ServiceState(name) for name in ("checkout", "payments", "catalog")
+        }
         self._baseline = deepcopy(self.services)
 
     def reset(self) -> None:
@@ -262,7 +310,10 @@ class CloudSimulator:
             s.previous_deployment = s.deployment
             s.deployment = "v1.1.0-bad"
             s.error_rate, s.p95_latency_ms = 0.34, 1850
-            s.logs += ["ERROR NullPointerException after deploy v1.1.0-bad", "WARN downstream retries exhausted"]
+            s.logs += [
+                "ERROR NullPointerException after deploy v1.1.0-bad",
+                "WARN downstream retries exhausted",
+            ]
         elif fault == "capacity":
             s.cpu_percent, s.p95_latency_ms, s.error_rate = 97, 2400, 0.12
             s.logs.append("WARN worker pool saturated: queue_depth=1842")
@@ -282,12 +333,23 @@ class CloudSimulator:
 
     def service_health(self, service: str) -> dict[str, Any]:
         s = self._service(service)
-        healthy = s.error_rate < 0.05 and s.p95_latency_ms < 500 and s.healthy_replicas == s.replicas
+        healthy = (
+            s.error_rate < 0.05
+            and s.p95_latency_ms < 500
+            and s.healthy_replicas == s.replicas
+        )
         return {"service": service, "healthy": healthy, **asdict(s)}
 
     def metrics(self, service: str) -> dict[str, Any]:
         s = self._service(service)
-        return {"service": service, "error_rate": s.error_rate, "p95_latency_ms": s.p95_latency_ms, "cpu_percent": s.cpu_percent, "replicas": s.replicas, "healthy_replicas": s.healthy_replicas}
+        return {
+            "service": service,
+            "error_rate": s.error_rate,
+            "p95_latency_ms": s.p95_latency_ms,
+            "cpu_percent": s.cpu_percent,
+            "replicas": s.replicas,
+            "healthy_replicas": s.healthy_replicas,
+        }
 
     def query_logs(self, service: str, contains: str = "") -> dict[str, Any]:
         logs = self._service(service).logs[-50:]
@@ -339,8 +401,15 @@ ToolFn = Callable[..., dict[str, Any]]
 
 
 class ToolRegistry:
-    def __init__(self, simulator: CloudSimulator) -> None:
-        self._tools: dict[str, ToolFn] = {"get_service_health": simulator.service_health, "get_metrics": simulator.metrics, "query_logs": simulator.query_logs, "restart_service": simulator.restart_service, "scale_service": simulator.scale_service, "rollback_deployment": simulator.rollback_deployment}
+    def __init__(self, provider: Any) -> None:
+        self._tools: dict[str, ToolFn] = {
+            "get_service_health": provider.service_health,
+            "get_metrics": provider.metrics,
+            "query_logs": provider.query_logs,
+            "restart_service": provider.restart_service,
+            "scale_service": provider.scale_service,
+            "rollback_deployment": provider.rollback_deployment,
+        }
 
     def names(self) -> list[str]:
         return sorted(self._tools)
@@ -351,6 +420,10 @@ class ToolRegistry:
             return ToolResult(False, {}, f"unknown tool: {name}")
         start = perf_counter()
         try:
-            return ToolResult(True, fn(**args), latency_ms=(perf_counter() - start) * 1000)
-        except Exception as exc:
-            return ToolResult(False, {}, str(exc), latency_ms=(perf_counter() - start) * 1000)
+            return ToolResult(
+                True, fn(**args), latency_ms=(perf_counter() - start) * 1000
+            )
+        except Exception as exc:  # noqa: BLE001 - provider SDK errors become safe tool failures
+            return ToolResult(
+                False, {}, str(exc), latency_ms=(perf_counter() - start) * 1000
+            )

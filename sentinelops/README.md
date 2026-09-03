@@ -18,6 +18,8 @@ The important design choice is that the model **reasons but does not authorize i
 - **Tamper-evident execution traces:** SHA-256 hash-chained event streams record model reasoning metadata, policy decisions, approvals, tool execution, and verification.
 - **Runbook retrieval:** service-aware operational knowledge grounds investigation and remediation.
 - **Deterministic cloud simulator:** inject bad deployments, capacity saturation, and crash loops without a cloud account.
+- **Production cloud adapters:** CloudWatch Logs/Metrics plus ECS, Cloud Logging/Monitoring plus Cloud Run, and Kubernetes/EKS/GKE pod, Deployment, ReplicaSet, and metrics APIs.
+- **Durable GCP event path:** authenticated Pub/Sub push ingestion and Firestore-backed incidents, approval state, hash-chained events, and remediation idempotency records.
 - **Closed-loop recovery:** a tool call is not considered success until independent health/SLO checks recover.
 - **Offline agent eval gate:** benchmark resolution rate, tool-selection accuracy, unsafe-action rate, and trace integrity without spending API credits.
 - **Operability:** liveness, readiness diagnostics, LLM connectivity check, operational metrics, CLI, FastAPI, Docker, and a zero-build dashboard.
@@ -84,6 +86,25 @@ The default model is `gpt-5-mini`. Override it with `SENTINELOPS_MODEL` or the C
 - No AWS/Kubernetes/cloud credentials are required for the built-in simulator
 
 The tests and `sentinelops eval` intentionally do **not** require or call the OpenAI API.
+
+## Infrastructure and state backends
+
+The default remains a zero-credential, in-memory simulator. Real providers are selected through environment variables:
+
+| Setting | Options |
+| --- | --- |
+| `SENTINELOPS_INFRA_BACKEND` | `simulator`, `aws_ecs`, `gcp_cloud_run`, `kubernetes` (`eks` and `gke` aliases) |
+| `SENTINELOPS_STATE_BACKEND` | `memory`, `firestore` |
+
+Install the matching SDK extra:
+
+```bash
+python -m pip install -e '.[api,llm,aws]'
+python -m pip install -e '.[api,llm,gcp]'
+python -m pip install -e '.[api,llm,kubernetes]'
+```
+
+See [`docs/PRODUCTION_INTEGRATIONS.md`](docs/PRODUCTION_INTEGRATIONS.md) for exact CloudWatch metric names, Cloud Logging filters, Cloud Run actions, Kubernetes labels/RBAC, Pub/Sub payloads, Firestore collections, and workload-identity guidance.
 
 ## Fresh-clone setup
 
@@ -417,6 +438,12 @@ curl http://127.0.0.1:8000/ready
 
 Do not bake `.env` or an API key into the image.
 
+For an image containing every production provider SDK:
+
+```bash
+docker build --build-arg SENTINELOPS_EXTRAS=production -t sentinelops .
+```
+
 ## 8. Optional Make targets
 
 ```bash
@@ -551,9 +578,9 @@ Then open `http://127.0.0.1:8080`.
 
 Each CLI demo creates a fresh in-memory simulator/orchestrator. Restarting `sentinelops serve` resets API/dashboard simulator and incident state.
 
-## Production extension points
+## Production integrations and remaining hardening
 
-The same interfaces can replace the simulator with Kubernetes/EKS/ECS/AWS control-plane adapters and the in-memory event stream with Kafka, DynamoDB, or Postgres. A production deployment would add durable workflows, external idempotency storage, RBAC-signed approvals, OpenTelemetry, per-tool circuit breakers, secret-manager/workload identity integration, model-call budgets, prompt/version tracking, and least-privilege IAM.
+The repository includes CloudWatch/ECS, Cloud Logging/Monitoring/Cloud Run, Kubernetes/EKS/GKE, Pub/Sub push, and Firestore adapters. They use ambient workload credentials and preserve the same tool contract as the simulator. A sensitive production deployment should additionally isolate the remediator behind its own write identity, cryptographically bind approvers to plan hashes, add per-tool circuit breakers, redact untrusted logs, restrict network egress, and emit OpenTelemetry and prompt/version provenance.
 
 The key architecture invariant should remain unchanged: **the model proposes; deterministic policy authorizes; tools execute; independent verification closes the loop.**
 
