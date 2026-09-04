@@ -8,7 +8,6 @@ from . import __version__
 from .core import CloudSimulator, EventStore, RunbookRetriever, ToolRegistry
 from .llm import OpenAIReasoner
 
-
 EXPECTED_TOOLS = {
     "get_service_health",
     "get_metrics",

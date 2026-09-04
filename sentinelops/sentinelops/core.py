@@ -69,6 +69,8 @@ class Incident:
     confidence: float = 0.0
     runbook_ids: list[str] = field(default_factory=list)
     pending_actions: list[dict[str, Any]] = field(default_factory=list)
+    pending_plan_hash: str = ""
+    approval: dict[str, Any] = field(default_factory=dict)
     executed_actions: list[dict[str, Any]] = field(default_factory=list)
     verification: dict[str, Any] = field(default_factory=dict)
 
@@ -143,6 +145,8 @@ class Settings:
     autonomous_confidence_threshold: float = 0.82
     max_blast_radius: int = 2
     action_budget: int = 4
+    verification_attempts: int = 6
+    verification_interval_seconds: float = 1.0
 
 
 class EventStore:
@@ -150,6 +154,7 @@ class EventStore:
 
     def __init__(self) -> None:
         self._events: dict[str, list[Event]] = defaultdict(list)
+        self._heads: dict[str, tuple[int, str]] = {}
         self._lock = RLock()
 
     def append(
@@ -171,6 +176,7 @@ class EventStore:
                 hash=hashlib.sha256(canonical.encode()).hexdigest(),
             )
             stream.append(event)
+            self._heads[incident_id] = (sequence, event.hash)
             return event
 
     def stream(self, incident_id: str) -> list[dict[str, Any]]:
@@ -190,7 +196,8 @@ class EventStore:
             if event.previous_hash != previous or event.hash != expected:
                 return False
             previous = event.hash
-        return True
+        sequence = len(self._events.get(incident_id, []))
+        return self._heads.get(incident_id, (0, "GENESIS")) == (sequence, previous)
 
     @staticmethod
     def _canonical(

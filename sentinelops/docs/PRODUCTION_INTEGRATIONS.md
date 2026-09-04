@@ -163,6 +163,27 @@ Firestore stores:
 
 This allows a new Cloud Run instance to retrieve an incident awaiting approval and resume its exact pending action. The Firestore identity needs access only to collections using the configured prefix.
 
+## Approval request and SLO polling
+
+An incident in `awaiting_approval` includes `pending_plan_hash`. Approval must bind a named actor to that exact plan:
+
+```bash
+curl -X POST "$SENTINELOPS_URL/api/incidents/INCIDENT_ID/approve" \
+  -H 'Content-Type: application/json' \
+  -d '{"approver":"on-call@example.com","plan_hash":"64_HEX_CHARACTERS"}'
+```
+
+A stale or mismatched hash returns HTTP 409 and executes nothing. Protect this endpoint with Cloud Run IAM/OIDC or an identity-aware gateway; the request field is recorded for audit but is not independently authenticated by the application.
+
+After a provider accepts an action, the verifier performs bounded polling. Configure the window for the provider's rollout and metric delay:
+
+```env
+SENTINELOPS_VERIFICATION_ATTEMPTS=18
+SENTINELOPS_VERIFICATION_INTERVAL_SECONDS=10
+```
+
+Recovery requires provider health plus every original incident metric at or below its alert threshold. The GCP Terraform example in `deploy/gcp` uses a three-minute verification window.
+
 ## Safety boundary
 
 The provider adapters do not change the authorization model:

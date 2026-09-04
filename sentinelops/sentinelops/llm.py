@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import os
+from dataclasses import dataclass
 from time import perf_counter
 from typing import Any
 
@@ -23,11 +23,15 @@ class LLMConfig:
     timeout_seconds: float = 30.0
 
     @classmethod
-    def from_env(cls) -> "LLMConfig":
+    def from_env(cls) -> LLMConfig:
         backend = os.getenv("SENTINELOPS_AGENT_BACKEND", "auto").strip().lower()
         if backend not in {"auto", "openai", "deterministic"}:
-            raise ValueError("SENTINELOPS_AGENT_BACKEND must be auto, openai, or deterministic")
-        fallback = os.getenv("SENTINELOPS_LLM_FALLBACK", "true").strip().lower() not in {"0", "false", "no", "off"}
+            raise ValueError(
+                "SENTINELOPS_AGENT_BACKEND must be auto, openai, or deterministic"
+            )
+        fallback = os.getenv(
+            "SENTINELOPS_LLM_FALLBACK", "true"
+        ).strip().lower() not in {"0", "false", "no", "off"}
         return cls(
             backend=backend,
             model=os.getenv("SENTINELOPS_MODEL", "gpt-5-mini").strip() or "gpt-5-mini",
@@ -47,7 +51,13 @@ class LLMResult:
 class OpenAIReasoner:
     """Thin Responses API adapter. The model proposes reasoning; policy remains deterministic."""
 
-    def __init__(self, config: LLMConfig | None = None, *, client: Any | None = None, api_key: str | None = None) -> None:
+    def __init__(
+        self,
+        config: LLMConfig | None = None,
+        *,
+        client: Any | None = None,
+        api_key: str | None = None,
+    ) -> None:
         self.config = config or LLMConfig.from_env()
         self.api_key = api_key or os.getenv("OPENAI_API_KEY", "").strip()
         self._client = client
@@ -57,17 +67,23 @@ class OpenAIReasoner:
             return
         if not self.api_key and client is None:
             if self.config.backend == "openai":
-                self.configuration_error = "OPENAI_API_KEY is required when SENTINELOPS_AGENT_BACKEND=openai"
+                self.configuration_error = (
+                    "OPENAI_API_KEY is required when SENTINELOPS_AGENT_BACKEND=openai"
+                )
             return
         if self._client is None:
             try:
                 from openai import OpenAI
             except ImportError as exc:
-                self.configuration_error = "Install the LLM extra with: pip install -e '.[llm]'"
+                self.configuration_error = (
+                    "Install the LLM extra with: pip install -e '.[llm]'"
+                )
                 if not self.config.fallback_to_deterministic:
                     raise LLMError(self.configuration_error) from exc
                 return
-            self._client = OpenAI(api_key=self.api_key, timeout=self.config.timeout_seconds, max_retries=2)
+            self._client = OpenAI(
+                api_key=self.api_key, timeout=self.config.timeout_seconds, max_retries=2
+            )
 
     @property
     def enabled(self) -> bool:
@@ -93,7 +109,9 @@ class OpenAIReasoner:
         schema: dict[str, Any],
     ) -> LLMResult:
         if not self.enabled:
-            raise LLMError(self.configuration_error or "OpenAI reasoning backend is not enabled")
+            raise LLMError(
+                self.configuration_error or "OpenAI reasoning backend is not enabled"
+            )
 
         start = perf_counter()
         try:
@@ -113,7 +131,7 @@ class OpenAIReasoner:
             raw = response.output_text
             data = json.loads(raw)
             if not isinstance(data, dict):
-                raise ValueError("structured model output was not an object")
+                raise TypeError("structured model output was not an object")
             return LLMResult(
                 data=data,
                 model=self.config.model,

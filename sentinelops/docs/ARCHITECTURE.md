@@ -38,7 +38,7 @@ The offline evaluation harness explicitly injects a deterministic reasoner so CI
 
 **Remediator** is the only layer that executes state-changing tools. It maintains an idempotency ledger so workflow retries cannot duplicate the same side effect.
 
-**Verifier** independently re-reads health and SLO metrics after remediation. Tool success alone is not enough to mark recovery.
+**Verifier** independently polls health and SLO metrics after remediation. It requires both provider health and every original incident metric to return to its alert threshold before recovery. Tool acceptance alone is never enough.
 
 ## Deterministic policy boundary
 
@@ -48,7 +48,7 @@ The model never receives an authorization primitive. It proposes; the Reviewer v
 
 ## Event sourcing and auditability
 
-Every material transition, reasoning stage, policy decision, approval, and tool action is appended to `EventStore`. Each event includes the hash of the previous event plus a canonical representation of the current event, producing a SHA-256 tamper-evident chain.
+Every material transition, reasoning stage, policy decision, approval, and tool action is appended to `EventStore`. Each event includes the hash of the previous event plus a canonical representation of the current event, producing a SHA-256 tamper-evident chain. Pending plans are also canonically hashed; approval must supply the exact current plan hash and an auditable approver identity.
 
 LLM events record non-secret metadata such as backend, model, response ID, latency, and accepted proposals. API keys are never added to the event payload.
 
@@ -87,4 +87,4 @@ When the OpenAI backend is active and a model request fails, `SENTINELOPS_LLM_FA
 
 ## Production extension path
 
-The repository now includes real provider and Firestore adapters. A hardened deployment should still separate read and write identities/services, cryptographically bind approval identity to the plan, add provider-specific retry/circuit-breaker policy, protect network egress, emit OpenTelemetry traces, and add prompt/version provenance and model-call budgets. Those concerns remain outside model authority.
+The repository now includes real provider and Firestore adapters, exact-plan approval hashing, bounded post-action SLO polling, and Terraform for Cloud Run/Pub/Sub/Firestore. A hardened deployment should still authenticate the recorded approver identity at the gateway, separate read and write services, add provider-specific retry/circuit-breaker policy, protect network egress, emit OpenTelemetry traces, and add prompt/version provenance and model-call budgets. Those concerns remain outside model authority.

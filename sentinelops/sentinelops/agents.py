@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import asdict, dataclass
+from time import sleep
 from typing import Any
 
 from .core import (
@@ -491,6 +492,12 @@ class ReviewerAgent(Agent):
             "replica_failure": "restart_service",
         }.get(incident.root_cause)
         for action in actions:
+            if action.tool not in {
+                "rollback_deployment",
+                "scale_service",
+                "restart_service",
+            }:
+                continue
             signature = (
                 action.tool,
                 tuple(sorted((k, str(v)) for k, v in action.args.items())),
@@ -554,17 +561,71 @@ class RemediatorAgent(Agent):
 class VerifierAgent(Agent):
     name = "verifier"
 
+    def __init__(
+        self,
+        context: AgentContext,
+        *,
+        attempts: int = 1,
+        interval_seconds: float = 0.0,
+        sleep_fn: Any = sleep,
+    ) -> None:
+        super().__init__(context)
+        self.attempts = max(1, attempts)
+        self.interval_seconds = max(0.0, interval_seconds)
+        self.sleep_fn = sleep_fn
+
     def verify(self, incident: Incident) -> dict:
-        health = self.context.tools.execute(
-            "get_service_health", {"service": incident.service}
-        )
-        metrics = self.context.tools.execute(
-            "get_metrics", {"service": incident.service}
-        )
+        observations: list[dict[str, Any]] = []
+        result: dict[str, Any] = {}
+        for attempt in range(1, self.attempts + 1):
+            health = self.context.tools.execute(
+                "get_service_health", {"service": incident.service}
+            )
+            metrics = self.context.tools.execute(
+                "get_metrics", {"service": incident.service}
+            )
+            metric_values = metrics.output if metrics.ok else {}
+            slo_checks = []
+            for signal in incident.signals:
+                current = metric_values.get(signal.metric)
+                passed = (
+                    isinstance(current, (int, float)) and current <= signal.threshold
+                )
+                slo_checks.append(
+                    {
+                        "metric": signal.metric,
+                        "observed": current,
+                        "threshold": signal.threshold,
+                        "passed": passed,
+                    }
+                )
+            recovered = bool(
+                health.ok
+                and health.output.get("healthy")
+                and metrics.ok
+                and all(check["passed"] for check in slo_checks)
+            )
+            observation = {
+                "attempt": attempt,
+                "recovered": recovered,
+                "health": health.output if health.ok else {},
+                "metrics": metric_values,
+                "slo_checks": slo_checks,
+                "errors": [
+                    message for message in (health.message, metrics.message) if message
+                ],
+            }
+            observations.append(observation)
+            result = observation
+            if recovered:
+                break
+            if attempt < self.attempts and self.interval_seconds:
+                self.sleep_fn(self.interval_seconds)
         result = {
-            "recovered": bool(health.ok and health.output.get("healthy")),
-            "health": health.output if health.ok else {},
-            "metrics": metrics.output if metrics.ok else {},
+            **result,
+            "attempt_count": len(observations),
+            "max_attempts": self.attempts,
+            "observations": observations,
         }
         self.emit(incident.id, "completed", result)
         return result

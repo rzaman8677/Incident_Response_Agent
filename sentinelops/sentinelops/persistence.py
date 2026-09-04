@@ -33,6 +33,8 @@ def incident_from_dict(data: dict[str, Any]) -> Incident:
         confidence=float(data.get("confidence", 0.0)),
         runbook_ids=list(data.get("runbook_ids", [])),
         pending_actions=list(data.get("pending_actions", [])),
+        pending_plan_hash=data.get("pending_plan_hash", ""),
+        approval=dict(data.get("approval", {})),
         executed_actions=list(data.get("executed_actions", [])),
         verification=dict(data.get("verification", {})),
     )
@@ -102,25 +104,32 @@ class FirestoreEventStore(EventStore):
     """Transactional Firestore hash chain with one stream head per incident."""
 
     def __init__(
-        self, client: Any, collection: str = "sentinelops_event_streams"
+        self,
+        client: Any,
+        collection: str = "sentinelops_event_streams",
+        transactional: Any | None = None,
     ) -> None:
         self.client = client
         self.collection = client.collection(collection)
+        self.transactional = transactional
 
     def append(
         self, incident_id: str, event_type: str, payload: dict[str, Any]
     ) -> Event:
-        try:
-            from google.cloud import firestore
-        except ImportError as exc:  # pragma: no cover - selected backend dependency
-            raise RuntimeError(
-                "install sentinelops-agent[gcp] for Firestore state"
-            ) from exc
+        transactional = self.transactional
+        if transactional is None:
+            try:
+                from google.cloud import firestore
+            except ImportError as exc:  # pragma: no cover - selected backend dependency
+                raise RuntimeError(
+                    "install sentinelops-agent[gcp] for Firestore state"
+                ) from exc
+            transactional = firestore.transactional
 
         stream_ref = self.collection.document(incident_id)
         transaction = self.client.transaction()
 
-        @firestore.transactional
+        @transactional
         def append_in_transaction(txn: Any) -> dict[str, Any]:
             snapshot = stream_ref.get(transaction=txn)
             state = snapshot.to_dict() if snapshot.exists else {}
@@ -163,7 +172,8 @@ class FirestoreEventStore(EventStore):
 
     def verify(self, incident_id: str) -> bool:
         previous = "GENESIS"
-        for raw in self.stream(incident_id):
+        events = self.stream(incident_id)
+        for raw in events:
             canonical = self._canonical(
                 raw["incident_id"],
                 raw["event_type"],
@@ -175,7 +185,12 @@ class FirestoreEventStore(EventStore):
             if raw.get("previous_hash") != previous or raw.get("hash") != expected:
                 return False
             previous = raw["hash"]
-        return True
+        snapshot = self.collection.document(incident_id).get()
+        state = snapshot.to_dict() if snapshot.exists else {}
+        return bool(
+            state.get("head_hash", "GENESIS") == previous
+            and int(state.get("next_sequence", 1)) == len(events) + 1
+        )
 
     @staticmethod
     def _canonical(
@@ -205,9 +220,13 @@ class FirestoreExecutionLedger:
     backend_name = "firestore"
 
     def __init__(
-        self, client: Any, collection: str = "sentinelops_execution_ledger"
+        self,
+        client: Any,
+        collection: str = "sentinelops_execution_ledger",
+        already_exists_error: type[Exception] | None = None,
     ) -> None:
         self.collection = client.collection(collection)
+        self.already_exists_error = already_exists_error
 
     def acquire(self, key: str) -> tuple[bool, ToolResult | None]:
         reference = self.collection.document(key)
@@ -215,10 +234,12 @@ class FirestoreExecutionLedger:
             reference.create({"status": "executing", "created_at": utcnow()})
             return True, None
         except Exception as exc:
-            try:
-                from google.api_core.exceptions import AlreadyExists
-            except ImportError:  # pragma: no cover
-                raise exc
+            AlreadyExists = self.already_exists_error
+            if AlreadyExists is None:
+                try:
+                    from google.api_core.exceptions import AlreadyExists
+                except ImportError:  # pragma: no cover
+                    raise exc
             if not isinstance(exc, AlreadyExists):
                 raise
         snapshot = reference.get()

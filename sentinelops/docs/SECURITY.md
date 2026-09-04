@@ -47,16 +47,20 @@ The deterministic CI/eval path never makes hosted model calls, which prevents te
 
 Every remediation proposal has an idempotency key. The remediator records the first execution result and returns the same result for a duplicate request, modeling protection against retries after worker/network failures.
 
+## Human approval binding
+
+When policy requires approval, SentinelOps stores a SHA-256 hash of the canonical pending action list. The approval request must include that exact hash and a non-empty approver identity. A changed, stale, or corrupted plan is rejected before the remediator receives it. In production, Cloud Run IAM or an identity-aware gateway must authenticate the caller and supply or validate the recorded identity; a client-provided string alone is audit context, not proof of identity.
+
 ## Auditability
 
 Incident events are SHA-256 hash chained. LLM-stage events record non-secret metadata such as model name, response ID, latency, accepted proposal, and backend. The verifier can recompute the chain to detect mutation of prior trace entries.
 
 ## Closed-loop recovery
 
-The system never equates a successful tool response with incident resolution. A separate verifier re-reads service health and SLO metrics; failed verification escalates the incident.
+The system never equates a successful tool response with incident resolution. A separate verifier performs bounded polling, re-reads service health, and checks each original incident metric against its stated SLO threshold; exhausted verification attempts escalate the incident.
 
 ## Real infrastructure adapters
 
 AWS, GCP, and Kubernetes SDK clients use ambient workload credentials. Firestore provides durable incident, event, and idempotency state. Missing telemetry fails closed, provider exceptions become failed tool results, and write calls remain behind deterministic review and policy.
 
-Do not give the public API container broad production write access in a sensitive deployment. Put the remediator behind a separately authenticated service with a resource-scoped write identity. Also add signed/RBAC-bound approval identity, per-tool rate limits and circuit breakers, network egress controls, redaction and prompt-injection defenses for untrusted logs/runbooks, secret-manager integration, model-call budgets, prompt/version provenance, and a security review for every enabled mutation adapter.
+Do not give the public API container broad production write access in a sensitive deployment. Put the remediator behind a separately authenticated service with a resource-scoped write identity. Also bind the recorded approver to a verified OIDC/RBAC principal, add per-tool rate limits and circuit breakers, network egress controls, redaction and prompt-injection defenses for untrusted logs/runbooks, model-call budgets, prompt/version provenance, and a security review for every enabled mutation adapter.

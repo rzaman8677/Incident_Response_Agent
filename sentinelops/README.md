@@ -12,7 +12,7 @@ The important design choice is that the model **reasons but does not authorize i
 - **Deterministic safety boundary:** high/critical-risk actions, excessive blast radius, unsupported actions, or low-confidence plans cannot silently execute.
 - **Grounded LLM investigation:** model findings are cross-checked against observed telemetry signatures before they influence remediation.
 - **Constrained LLM planning:** the model can only propose `rollback_deployment`, `scale_service`, or `restart_service`, and proposals are semantically reviewed against the diagnosed root cause.
-- **Human-in-the-loop resume:** assisted mode pauses on a pending plan and resumes the same incident after approval.
+- **Human-in-the-loop resume:** assisted mode pauses on a pending plan and resumes only when an identified approver submits the matching SHA-256 plan hash.
 - **Idempotent side effects:** remediation actions carry idempotency keys so retries do not duplicate mutations.
 - **Action budgets:** caps remediation attempts and prevents unbounded agent loops.
 - **Tamper-evident execution traces:** SHA-256 hash-chained event streams record model reasoning metadata, policy decisions, approvals, tool execution, and verification.
@@ -20,8 +20,8 @@ The important design choice is that the model **reasons but does not authorize i
 - **Deterministic cloud simulator:** inject bad deployments, capacity saturation, and crash loops without a cloud account.
 - **Production cloud adapters:** CloudWatch Logs/Metrics plus ECS, Cloud Logging/Monitoring plus Cloud Run, and Kubernetes/EKS/GKE pod, Deployment, ReplicaSet, and metrics APIs.
 - **Durable GCP event path:** authenticated Pub/Sub push ingestion and Firestore-backed incidents, approval state, hash-chained events, and remediation idempotency records.
-- **Closed-loop recovery:** a tool call is not considered success until independent health/SLO checks recover.
-- **Offline agent eval gate:** benchmark resolution rate, tool-selection accuracy, unsafe-action rate, and trace integrity without spending API credits.
+- **Closed-loop recovery:** a tool call is not considered success until bounded polling observes both provider health and the original incident SLO threshold recover.
+- **Offline 100-case agent eval gate:** 75 recovery cases and 25 adversarial safety cases measure tool accuracy, unsafe execution, resolution, and trace integrity without spending API credits.
 - **Operability:** liveness, readiness diagnostics, LLM connectivity check, operational metrics, CLI, FastAPI, Docker, and a zero-build dashboard.
 
 ## Architecture
@@ -104,21 +104,21 @@ python -m pip install -e '.[api,llm,gcp]'
 python -m pip install -e '.[api,llm,kubernetes]'
 ```
 
-See [`docs/PRODUCTION_INTEGRATIONS.md`](docs/PRODUCTION_INTEGRATIONS.md) for exact CloudWatch metric names, Cloud Logging filters, Cloud Run actions, Kubernetes labels/RBAC, Pub/Sub payloads, Firestore collections, and workload-identity guidance.
+See [`docs/PRODUCTION_INTEGRATIONS.md`](docs/PRODUCTION_INTEGRATIONS.md) for exact CloudWatch metric names, Cloud Logging filters, Cloud Run actions, Kubernetes labels/RBAC, Pub/Sub payloads, Firestore collections, and workload-identity guidance. The reproducible GCP deployment is in [`deploy/gcp`](deploy/gcp), and [`docs/RESUME_CLAIM_EVIDENCE.md`](docs/RESUME_CLAIM_EVIDENCE.md) maps each resume phrase to its executable evidence and live-cloud proof requirement.
 
 ## Fresh-clone setup
 
 Clone the repository:
 
 ```bash
-git clone https://github.com/rzaman8677/agent.git
-cd agent
+git clone https://github.com/rzaman8677/Incident_Response_Agent.git
+cd Incident_Response_Agent
 ```
 
-If PR #1 has not been merged yet, check out the feature branch:
+If the production integrations PR has not been merged yet, check out its feature branch:
 
 ```bash
-git checkout agent/sentinelops-control-plane
+git checkout feature/production-cloud-integrations
 ```
 
 Enter the project:
@@ -228,14 +228,17 @@ The tests are offline and do not use your API key. They cover:
 - assisted vs. autonomous policy behavior
 - hard high-risk approval gates
 - human approval pause/resume
+- exact-plan approval hashing and approver audit records
 - autonomous capacity recovery
-- hash-chain integrity
+- bounded SLO polling and original-threshold verification
+- hash-chain integrity and tamper detection
 - runbook retrieval
 - runtime/readiness diagnostics
 - FastAPI incident/approval/recovery flow
 - OpenAI Responses API request shape using a fake client
 - mocked LLM Investigator + Planner end-to-end recovery
-- benchmark regression thresholds
+- mocked CloudWatch/ECS, Cloud Logging/Monitoring/Run, Kubernetes, Pub/Sub, and Firestore behavior
+- exactly 100 recovery/safety benchmark cases
 
 ## 4. Run the deterministic agent benchmark
 
@@ -247,16 +250,22 @@ The benchmark is deliberately pinned to the deterministic backend so it is repro
 
 It reports:
 
+- `case_count` (exactly `100`)
+- `case_pass_rate`
 - `resolution_rate`
 - `tool_selection_accuracy`
+- `unsafe_action_count`
 - `unsafe_action_rate`
 - `trace_integrity_rate`
 
 Validated baseline:
 
 ```text
+case_count              = 100
+case_pass_rate          = 1.0
 resolution_rate          = 1.0
 tool_selection_accuracy  = 1.0
+unsafe_action_count      = 0
 unsafe_action_rate       = 0.0
 trace_integrity_rate     = 1.0
 ```
@@ -282,7 +291,7 @@ awaiting_approval
 Run with approval:
 
 ```bash
-sentinelops demo --fault bad_deployment --service checkout --mode assisted --approve
+sentinelops demo --fault bad_deployment --service checkout --mode assisted --approve --approver on-call@example.com
 ```
 
 Expected remediation: `rollback_deployment`; expected final status: `resolved`.
@@ -371,7 +380,7 @@ Useful endpoints:
 - `GET /api/incidents` — list incidents
 - `POST /api/incidents` — create an incident from an alert/SLO signal
 - `POST /api/incidents/{id}/respond` — run LLM investigation/planning, deterministic review, and policy checking
-- `POST /api/incidents/{id}/approve` — resume approval-gated remediation
+- `POST /api/incidents/{id}/approve` — resume remediation with an approver identity and the incident's `pending_plan_hash`
 - `GET /api/incidents/{id}/trace` — inspect and verify the event stream
 - `POST /api/simulator/faults` — inject a deterministic fault
 - `GET /api/simulator/state` — inspect simulated cloud state
@@ -468,9 +477,10 @@ The OpenAI model is deliberately **not** given direct authority over the tool re
 5. Structured output constrains the planner to the allowlisted action schema.
 6. Reviewer rejects wrong-service, duplicate, out-of-range, or root-cause-inconsistent proposals.
 7. PolicyEngine independently applies autonomy mode, risk, blast-radius, and confidence gates.
-8. Remediator is the only layer that actually invokes a write tool and maintains the idempotency ledger.
-9. Verifier independently checks service health/SLO recovery after execution.
-10. Every stage is appended to the tamper-evident event stream.
+8. Human approval is bound to the canonical pending plan with SHA-256 before any gated write can execute.
+9. Remediator is the only layer that actually invokes a write tool and maintains the idempotency ledger.
+10. Verifier polls provider health and checks the original alert metric against its SLO threshold.
+11. Every stage is appended to the tamper-evident event stream.
 
 If the LLM returns malformed output or the API is temporarily unavailable, `SENTINELOPS_LLM_FALLBACK=true` permits deterministic fallback. Authorization never falls back to the model.
 
