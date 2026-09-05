@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import uuid
 from collections import defaultdict
@@ -233,7 +234,11 @@ class PolicyEngine:
 
     def evaluate(self, action: ActionProposal) -> PolicyDecision:
         if action.tool not in self.WRITE_TOOLS:
-            return PolicyDecision(True, False, "read-only diagnostic action")
+            if action.tool in {"get_metrics", "get_service_health", "query_logs"}:
+                return PolicyDecision(True, False, "read-only diagnostic action")
+            return PolicyDecision(False, False, "unregistered tool")
+        if not math.isfinite(action.confidence) or not 0 <= action.confidence <= 1:
+            return PolicyDecision(False, False, "invalid confidence")
         if self.settings.autonomy_mode is AutonomyMode.OBSERVE:
             return PolicyDecision(False, True, "observe mode forbids state changes")
         if action.risk in {RiskLevel.HIGH, RiskLevel.CRITICAL}:

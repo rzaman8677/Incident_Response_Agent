@@ -51,6 +51,23 @@ class MemoryIncidentStore:
         with self._lock:
             self.items[incident.id] = incident
 
+    def create(self, incident: Incident) -> bool:
+        with self._lock:
+            if incident.id in self.items:
+                return False
+            self.items[incident.id] = incident
+            return True
+
+    def transition(
+        self, incident_id: str, expected: IncidentStatus, target: IncidentStatus
+    ) -> Incident | None:
+        with self._lock:
+            incident = self.items.get(incident_id)
+            if incident is None or incident.status is not expected:
+                return None
+            incident.touch(target)
+            return incident
+
     def get(self, incident_id: str) -> Incident | None:
         return self.items.get(incident_id)
 
@@ -82,9 +99,53 @@ class MemoryExecutionLedger:
 class FirestoreIncidentStore:
     backend_name = "firestore"
 
-    def __init__(self, client: Any, collection: str = "sentinelops_incidents") -> None:
+    def __init__(
+        self,
+        client: Any,
+        collection: str = "sentinelops_incidents",
+        *,
+        transactional: Any | None = None,
+    ) -> None:
         self.client = client
         self.collection = client.collection(collection)
+        self.transactional = transactional
+
+    def _transaction(self, fn: Any) -> Any:
+        decorator = self.transactional
+        if decorator is None:
+            from google.cloud import firestore
+
+            decorator = firestore.transactional
+        return decorator(fn)(self.client.transaction())
+
+    def create(self, incident: Incident) -> bool:
+        ref = self.collection.document(incident.id)
+
+        def write(txn: Any) -> bool:
+            if ref.get(transaction=txn).exists:
+                return False
+            txn.set(ref, incident.to_dict())
+            return True
+
+        return self._transaction(write)
+
+    def transition(
+        self, incident_id: str, expected: IncidentStatus, target: IncidentStatus
+    ) -> Incident | None:
+        ref = self.collection.document(incident_id)
+
+        def write(txn: Any) -> Incident | None:
+            snapshot = ref.get(transaction=txn)
+            if not snapshot.exists:
+                return None
+            incident = incident_from_dict(snapshot.to_dict())
+            if incident.status is not expected:
+                return None
+            incident.touch(target)
+            txn.set(ref, incident.to_dict())
+            return incident
+
+        return self._transaction(write)
 
     def save(self, incident: Incident) -> None:
         self.collection.document(incident.id).set(incident.to_dict())

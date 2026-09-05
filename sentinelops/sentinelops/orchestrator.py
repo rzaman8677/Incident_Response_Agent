@@ -105,7 +105,8 @@ class SentinelOrchestrator:
             **({"id": incident_id} if incident_id else {}),
         )
         with self._lock:
-            self.incident_store.save(incident)
+            if not self.incident_store.create(incident):
+                return self.get(incident.id)
         self.events.append(
             incident.id,
             "incident.created",
@@ -115,18 +116,30 @@ class SentinelOrchestrator:
 
     def respond(self, incident_id: str) -> Incident:
         incident = self.get(incident_id)
-        if incident.status is IncidentStatus.AWAITING_APPROVAL:
+        if incident.status is not IncidentStatus.DETECTED:
             return incident
-        if incident.status in {
-            IncidentStatus.EXECUTING,
-            IncidentStatus.VERIFYING,
-            IncidentStatus.RESOLVED,
-            IncidentStatus.ESCALATED,
-        }:
+        claimed = self.incident_store.transition(
+            incident_id, IncidentStatus.DETECTED, IncidentStatus.INVESTIGATING
+        )
+        if claimed is None:
+            return self.get(incident_id)
+        incident = claimed
+        try:
+            return self._respond_claimed(incident)
+        except Exception as exc:  # noqa: BLE001 - persist a terminal, auditable failure
+            incident.touch(IncidentStatus.ESCALATED)
+            self.incident_store.save(incident)
+            self.events.append(
+                incident.id,
+                "orchestrator.escalated",
+                {
+                    "reason": "incident processing failed",
+                    "error_type": type(exc).__name__,
+                },
+            )
             return incident
 
-        incident.touch(IncidentStatus.INVESTIGATING)
-        self.incident_store.save(incident)
+    def _respond_claimed(self, incident: Incident) -> Incident:
         self.events.append(
             incident.id, "orchestrator.state", {"status": incident.status.value}
         )
@@ -215,11 +228,15 @@ class SentinelOrchestrator:
         identity = approver.strip()
         if not identity:
             raise ValueError("approver identity is required")
-        actions = self._pending.pop(incident.id, None)
-        if actions is None:
-            actions = [
-                self._proposal_from_dict(item) for item in incident.pending_actions
-            ]
+        # Always execute the persisted, hash-checked plan, never a mutable cache.
+        actions = [self._proposal_from_dict(item) for item in incident.pending_actions]
+        claimed = self.incident_store.transition(
+            incident_id, IncidentStatus.AWAITING_APPROVAL, IncidentStatus.EXECUTING
+        )
+        if claimed is None:
+            raise ValueError("incident approval is already being processed")
+        incident = claimed
+        self._pending.pop(incident.id, None)
         incident.approval = {
             "approver": identity,
             "plan_hash": expected,
@@ -256,6 +273,15 @@ class SentinelOrchestrator:
     def _execute_and_verify(
         self, incident: Incident, actions: list[ActionProposal]
     ) -> Incident:
+        if not actions:
+            incident.touch(IncidentStatus.ESCALATED)
+            self.incident_store.save(incident)
+            self.events.append(
+                incident.id,
+                "orchestrator.escalated",
+                {"reason": "all remediation actions were denied by policy"},
+            )
+            return incident
         incident.pending_actions = []
         incident.touch(IncidentStatus.EXECUTING)
         self.incident_store.save(incident)

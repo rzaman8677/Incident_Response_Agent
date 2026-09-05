@@ -48,7 +48,7 @@ sentinelops = "sentinelops.cli:main"
 include = ["sentinelops*"]
 
 [tool.setuptools.package-data]
-sentinelops = ["runbooks.json"]
+sentinelops = ["runbooks.json", "web/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
