@@ -24,3 +24,15 @@ sentinelops doctor
 ```
 
 Offline tests cannot prove that a live GCP deployment currently exists or that real credentials have the intended IAM scope. To substantiate the word "deployed," apply `deploy/gcp` to a staging project, run one canary incident, retain the Cloud Run revision and CI run links, and capture the verified incident trace. A real OpenAI request is separately checked with `sentinelops llm-check`; CI uses mocks so it remains deterministic and secret-free.
+
+## September 5, 2026 follow-up audit
+
+Compared against `raiyan_zaman(20260904-170928).pdf`. That resume states **85% tool accuracy in 100 CI evals**, whereas the current repository's deterministic benchmark expects **100%**. These are not interchangeable measurements: retain an archived evaluation for 85% if it refers to a different model/run. The deterministic benchmark does not measure unrestricted live OpenAI reasoning accuracy.
+
+`tests/test_resume_regressions.py` additionally covers concurrent responders, duplicate creation without resetting resolved state, persisted-plan approval despite a changed process cache, conditional Firestore transitions, escalation of processing failures, empty/denied execution and rejection of nonfinite confidence/unknown tools. The provider SDK extras also install successfully; no real cloud credentials or OpenAI API key were available for live tests.
+
+GCP updates require `iam.serviceAccounts.actAs` on each managed service's runtime identity as well as permission to update that service. `deploy/gcp` now includes `managed_service_account_emails` for those scoped bindings. Default Cloud Monitoring inputs are custom `error_rate`, `p95_latency_ms` and `cpu_percent` metrics: your target service must emit them or you must supply compatible mappings. A normal Cloud Run deployment alone does not create those custom metrics.
+
+The action ledger prevents automatic replay of a key whose mutation may already have started. If a process dies between a provider mutation and recording its result, inspect the real service before manually reconciling the incident; no database can atomically commit an arbitrary external cloud mutation. A live canary is still required to substantiate **deployed**, IAM scope, telemetry freshness and actual recovery.
+
+Recorded local result: **30 tests passed**, the 100-case deterministic evaluation passed with 100% expected tool selection and zero unsafe actions, Ruff passed, production SDK extras installed, Terraform HCL parsed, and the wheel/sdist built. The dashboard HTML is now included in the Python package so the installed wheel can serve `/` outside the source checkout. The benchmark output is retained in `resume-audit-eval.json`.

@@ -21,7 +21,7 @@ app = FastAPI(
     description="Policy-gated multi-agent incident response control plane with OpenAI reasoning",
 )
 control_plane = SentinelOrchestrator()
-WEB_ROOT = Path(__file__).resolve().parents[1] / "web"
+WEB_ROOT = Path(__file__).resolve().parent / "web"
 
 
 class IncidentCreate(BaseModel):
