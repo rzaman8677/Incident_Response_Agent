@@ -431,7 +431,7 @@ def passthrough_transactional(function):
 
 def firestore_state(client):
     return (
-        FirestoreIncidentStore(client, "test_incidents"),
+        FirestoreIncidentStore(client, "test_incidents", transactional=lambda fn: fn),
         FirestoreEventStore(
             client,
             "test_event_streams",

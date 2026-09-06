@@ -21,6 +21,7 @@ locals {
   required_apis = toset([
     "artifactregistry.googleapis.com",
     "firestore.googleapis.com",
+    "iam.googleapis.com",
     "logging.googleapis.com",
     "monitoring.googleapis.com",
     "pubsub.googleapis.com",
@@ -243,4 +244,11 @@ resource "google_pubsub_subscription_iam_member" "dead_letter_subscriber" {
   subscription = google_pubsub_subscription.alerts_push.name
   role         = "roles/pubsub.subscriber"
   member       = "serviceAccount:service-${data.google_project.current.number}@gcp-sa-pubsub.iam.gserviceaccount.com"
+}
+
+resource "google_service_account_iam_member" "managed_service_act_as" {
+  for_each           = var.managed_service_account_emails
+  service_account_id = "projects/${var.project_id}/serviceAccounts/${each.value}"
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.runtime.email}"
 }

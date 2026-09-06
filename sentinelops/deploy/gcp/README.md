@@ -35,3 +35,7 @@ terraform apply
 ```
 
 Set `create_firestore_database=true` only when the selected database does not already exist. After apply, publish the documented incident JSON to the `alert_topic` output and confirm the incident is persisted, pauses for a matching approval, executes once, and produces a valid trace.
+
+## Managed service runtime identities
+
+Set `managed_service_account_emails` to the runtime service-account emails of the services in `managed_service_names`. Cloud Run service updates require `iam.serviceAccounts.actAs` for these identities. The template grants `roles/iam.serviceAccountUser` only on the named accounts. Also ensure the three custom Cloud Monitoring metrics described in `docs/PRODUCTION_INTEGRATIONS.md` actually exist before expecting diagnosis and SLO checks to work.

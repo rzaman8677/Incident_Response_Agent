@@ -61,3 +61,9 @@ variable "deletion_protection" {
   type        = bool
   default     = true
 }
+
+variable "managed_service_account_emails" {
+  description = "Runtime service accounts on managed Cloud Run services; updates require iam.serviceAccounts.actAs."
+  type        = set(string)
+  default     = []
+}

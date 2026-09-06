@@ -503,7 +503,7 @@ sentinelops/evals.py         offline recovery + safety benchmark
 sentinelops/diagnostics.py   readiness and LLM configuration checks
 sentinelops/api.py           FastAPI control plane
 runbooks.json                operational grounding
-web/index.html               visual control plane
+sentinelops/web/index.html   packaged visual control plane
 ```
 
 A strong interview demo sequence is:
